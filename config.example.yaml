@@ -19,16 +19,18 @@ dm:
 
 locale: ru   # ru | en
 
-commands:
-  prefix: "!"
+# Пауза перед любым ответом бота (секунды). Максимум 600. 0 — без задержки.
+reply_delay_sec: 0
 
 weather:
-  provider: openweathermap
+  # openmeteo — без API-ключа, обычно доступен из РФ (api.open-meteo.com)
+  # openweathermap — нужен WEATHER_API_KEY
+  provider: openmeteo
   default_city: Moscow
 
 blacklist:
   path: data/blacklist.json
 
 admins:
-  # Full public keys (hex, 64 chars typical). Remote stop: !stop / !стоп — only in DM (sender known).
+  # Full public keys (hex, 64 chars typical). Remote stop: stop / стоп — only in DM (sender known).
   public_keys: []

@@ -19,10 +19,10 @@ class BotConfig:
     channels_enabled: list[int]
     dm_enabled: bool
     locale: Locale
-    command_prefix: str
     weather_provider: str
     weather_default_city: str
     blacklist_path: Path
+    reply_delay_sec: float
     admin_public_keys: list[str] = field(default_factory=list)
 
     @classmethod
@@ -30,7 +30,6 @@ class BotConfig:
         serial = raw.get("serial") or {}
         channels = raw.get("channels") or {}
         dm = raw.get("dm") or {}
-        commands = raw.get("commands") or {}
         weather = raw.get("weather") or {}
         blacklist = raw.get("blacklist") or {}
         admins = raw.get("admins") or {}
@@ -44,16 +43,24 @@ class BotConfig:
 
         keys = [str(k).strip().lower() for k in (admins.get("public_keys") or []) if str(k).strip()]
 
+        try:
+            reply_delay_sec = float(raw.get("reply_delay_sec", 0) or 0)
+        except (TypeError, ValueError):
+            reply_delay_sec = 0.0
+        reply_delay_sec = max(0.0, min(reply_delay_sec, 600.0))
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
             channels_enabled=list(channels.get("enabled_indices") or []),
             dm_enabled=bool(dm.get("enabled", True)),
             locale=loc,  # type: ignore[arg-type]
-            command_prefix=str(commands.get("prefix", "!")),
-            weather_provider=str(weather.get("provider", "openweathermap")),
-            weather_default_city=str(weather.get("default_city", "")).strip(),
+            weather_provider=str(weather.get("provider", "openmeteo")),
+            weather_default_city=str(
+                weather.get("default_city") or weather.get("city") or ""
+            ).strip(),
             blacklist_path=blacklist_path,
+            reply_delay_sec=reply_delay_sec,
             admin_public_keys=keys,
         )
 

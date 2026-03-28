@@ -1,6 +1,6 @@
 # MeshCore BotCore
 
-Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: команды в выбранных каналах и в личке, погода (OpenWeatherMap), help, чёрный список, остановка админом (личка).
+Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: команды в выбранных каналах и в личке, погода ([Open-Meteo](https://open-meteo.com/) по умолчанию, без ключа; опционально OpenWeatherMap), help, чёрный список, остановка админом (личка).
 
 **Основной способ запуска — Docker на Linux** с пробросом USB. Нативный Python — для разработки или если Docker на вашей ОС не подходит.
 
@@ -8,7 +8,7 @@ Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: ко
 
 - **Docker + Docker Compose** (Linux-хост с доступом к USB serial)
 - Узел с прошивкой Companion
-- Ключ [OpenWeatherMap](https://openweathermap.org/api) в **`WEATHER_API_KEY`** (для работы бота; для диагностики не нужен)
+- По умолчанию погода через **Open-Meteo** (ключ не нужен). Для **OpenWeatherMap** задайте **`WEATHER_API_KEY`** в `.env` и в `config.yaml`: **`weather.provider: openweathermap`**
 
 ## Docker: запуск бота
 
@@ -16,7 +16,8 @@ Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: ко
 cd BotCore
 cp config.example.yaml config.yaml
 # В config.yaml: serial.device = /dev/ttyUSB0 (как в контейнере), channels, locale, admins
-echo 'WEATHER_API_KEY=your_key' >> .env
+# Опционально, только для OpenWeatherMap:
+# echo 'WEATHER_API_KEY=your_key' >> .env
 docker compose up --build
 ```
 
@@ -40,7 +41,7 @@ docker compose --profile diagnose run --rm diagnose
 
 ### Остановка и перезапуск контейнера
 
-После команды **`!stop`** процесс завершается с кодом 0. При **`restart: unless-stopped`** Compose **перезапустит** контейнер. Чтобы бот остался выключенным: **`docker compose stop`** или в `docker-compose.yml` задайте **`restart: "no"`**.
+После команды **`stop`** (в личке) процесс завершается с кодом 0. При **`restart: unless-stopped`** Compose **перезапустит** контейнер. Чтобы бот остался выключенным: **`docker compose stop`** или в `docker-compose.yml` задайте **`restart: "no"`**.
 
 ---
 
@@ -54,7 +55,7 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml
 # serial.device: COM3 (Windows) или /dev/ttyUSB0 (Linux)
-export WEATHER_API_KEY=...
+# export WEATHER_API_KEY=...  # только для weather.provider: openweathermap
 python -m meshcore_bot
 ```
 
@@ -69,21 +70,27 @@ python -m meshcore_bot --diagnose
 
 ---
 
-## Команды в эфире (префикс по умолчанию `!`)
+## Команды в эфире
+
+Префикса нет. В канале строки часто вида `Имя: команда` — команда берётся после первого `:`.
 
 | Команда | Описание |
 |--------|----------|
-| `!погода` / `!weather` [город] | Погода; без города — `weather.default_city` |
-| `!помощь` / `!help` | Короткий список команд |
-| `!стоп` / `!stop` | Остановка процесса (**только личка**, ключ в `admins.public_keys`) |
+| `погода` / `weather` [город] | Погода; без города — `weather.default_city` |
+| `помощь` / `help` | Короткий список команд |
+| `стоп` / `stop` | Остановка процесса (**только личка**, ключ в `admins.public_keys`) |
 
-**`!стоп` в канале игнорируется** (в пакете канала нет ключа отправителя).
+Ответы бота начинаются с `@[ник]` (в канале — из части до `:` в вашей строке).
+
+**`стоп` в канале игнорируется** (в пакете канала нет ключа отправителя).
 
 ## Конфигурация
 
 См. [config.example.yaml](config.example.yaml). В контейнере путь к конфигу: **`MESHCORE_BOT_CONFIG=/app/config.yaml`** (задаётся в образе).
 
 - **`locale`**: `ru` | `en`
+- **`reply_delay_sec`**: пауза в секундах перед ответом (0 — нет; максимум 600)
+- **`weather.provider`**: `openmeteo` (по умолчанию) или `openweathermap` (нужен `WEATHER_API_KEY`)
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex) для удалённой остановки
 

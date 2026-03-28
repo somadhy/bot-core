@@ -6,11 +6,8 @@
     "city_not_found": "Город не найден.",
     "internal": "Ошибка бота."
   },
-  "weather": {
-    "line": "{city}: {temp}C, {desc}"
-  },
   "help": {
-    "body": "Команды: {p}погода [город] | {p}weather [city] | {p}помощь | {p}help"
+    "body": "Команды: погода [город] | weather [city] | помощь | help"
   },
   "admin": {
     "shutdown_ok": "Останавливаюсь."
