@@ -21,6 +21,7 @@ class BotConfig:
     locale: Locale
     weather_provider: str
     weather_default_city: str
+    weather_cache_ttl_minutes: float
     blacklist_path: Path
     reply_delay_sec: float
     advert_interval_hours: float
@@ -80,6 +81,20 @@ class BotConfig:
         if advert_interval_hours > 8760.0:
             advert_interval_hours = 8760.0
 
+        _ttl_raw = weather.get("cache_ttl_minutes")
+        if _ttl_raw is None:
+            weather_cache_ttl_minutes = 15.0
+        else:
+            try:
+                weather_cache_ttl_minutes = float(_ttl_raw)
+            except (TypeError, ValueError):
+                weather_cache_ttl_minutes = 15.0
+        if weather_cache_ttl_minutes < 0:
+            weather_cache_ttl_minutes = 0.0
+        # Cap ~7 days
+        if weather_cache_ttl_minutes > 10080.0:
+            weather_cache_ttl_minutes = 10080.0
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
@@ -90,6 +105,7 @@ class BotConfig:
             weather_default_city=str(
                 weather.get("default_city") or weather.get("city") or ""
             ).strip(),
+            weather_cache_ttl_minutes=weather_cache_ttl_minutes,
             blacklist_path=blacklist_path,
             reply_delay_sec=reply_delay_sec,
             advert_interval_hours=advert_interval_hours,

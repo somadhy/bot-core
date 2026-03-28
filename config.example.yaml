@@ -33,6 +33,8 @@ weather:
   # openweathermap — нужен WEATHER_API_KEY
   provider: openmeteo
   default_city: Moscow
+  # Кеш ответа по одному городу (минуты). 0 — без кеша.
+  cache_ttl_minutes: 15
 
 blacklist:
   path: data/blacklist.json
