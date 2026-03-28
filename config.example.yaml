@@ -1,11 +1,14 @@
 # Copy to config.yaml and adjust. Path: MESHCORE_BOT_CONFIG or ./config.yaml
 #
-# Проверка Companion и список каналов (индексы для channels.enabled_indices):
-#   python -m meshcore_bot --diagnose
-#   (бот не запускается, только опрос устройства по serial из этого конфига)
+# Docker (compose): в контейнере USB пробрасывается как /dev/ttyUSB0 — укажите его здесь,
+# даже если на хосте порт /dev/ttyACM0 (см. SERIAL_DEVICE в docker-compose.yml).
+#
+# Диагностика (индексы каналов для channels.enabled_indices):
+#   Docker:  docker compose --profile diagnose run --rm diagnose
+#   Локально: python -m meshcore_bot --diagnose
 
 serial:
-  device: /dev/ttyUSB0   # Windows: COM3
+  device: /dev/ttyUSB0   # Docker в compose: оставьте ttyUSB0. Windows без Docker: COM3
   baudrate: 115200
 
 channels:

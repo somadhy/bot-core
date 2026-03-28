@@ -1,3 +1,4 @@
+# Образ для сервисов `bot` и `diagnose` в docker-compose.yml (основной сценарий запуска).
 FROM python:3.12-slim
 
 WORKDIR /app
