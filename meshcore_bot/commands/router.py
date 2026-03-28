@@ -39,14 +39,12 @@ def _body_after_channel_label(text: str) -> str:
     return after if after else t
 
 
-def parse_incoming(text: str) -> ParsedCommand:
-    s = _body_after_channel_label(text)
+def _parse_command_tokens(s: str) -> ParsedCommand:
+    """First token is the command; optional trailing ``:`` is stripped (``погода: Москва``)."""
     if not s:
         return ParsedCommand(CmdKind.NONE)
-
     parts = s.split(maxsplit=1)
-
-    name = parts[0].strip().casefold()
+    name = parts[0].strip().casefold().rstrip(":")
     arg = (parts[1].strip() if len(parts) > 1 else "").strip()
 
     if name in ("weather", "погода"):
@@ -55,4 +53,16 @@ def parse_incoming(text: str) -> ParsedCommand:
         return ParsedCommand(CmdKind.HELP)
     if name in ("stop", "стоп"):
         return ParsedCommand(CmdKind.STOP)
+    return ParsedCommand(CmdKind.NONE)
+
+
+def parse_incoming(text: str) -> ParsedCommand:
+    """Parse ``погода``, ``погода Москва``, ``погода: Москва``, and channel-style ``Nick: погода``."""
+    t = _normalize_cmd_text(text)
+    p = _parse_command_tokens(t)
+    if p.kind != CmdKind.NONE:
+        return p
+    after = _body_after_channel_label(text)
+    if after != t:
+        return _parse_command_tokens(after)
     return ParsedCommand(CmdKind.NONE)

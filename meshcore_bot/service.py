@@ -183,9 +183,10 @@ class BotService:
             await self._send_chan(ch, _weather_reply(nick, line))
 
     async def _on_contact_msg(self, event: Event) -> None:
-        payload = event.payload or {}
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        attrs = event.attributes if isinstance(event.attributes, dict) else {}
         text = str(payload.get("text", ""))
-        pubkey_prefix = payload.get("pubkey_prefix")
+        pubkey_prefix = payload.get("pubkey_prefix") or attrs.get("pubkey_prefix")
         contact = (
             self._mesh.get_contact_by_key_prefix(pubkey_prefix) if pubkey_prefix else None
         )
@@ -200,6 +201,13 @@ class BotService:
             return
 
         dst = self._resolve_dm_dst(pubkey_prefix)
+        if dst is None:
+            logger.warning(
+                "CONTACT_MSG_RECV: command %s but no pubkey_prefix (cannot reply); preview=%r",
+                parsed.kind.name,
+                text[:120],
+            )
+            return
 
         if parsed.kind == CmdKind.STOP:
             if not is_admin(public_key, self._cfg.admin_public_keys):
