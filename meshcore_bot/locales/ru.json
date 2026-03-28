@@ -1,0 +1,18 @@
+{
+  "errors": {
+    "no_default_city": "Город не указан и default_city не задан.",
+    "weather_not_configured": "Погода: нет WEATHER_API_KEY.",
+    "weather_failed": "Погода: ошибка ({detail})",
+    "city_not_found": "Город не найден.",
+    "internal": "Ошибка бота."
+  },
+  "weather": {
+    "line": "{city}: {temp}C, {desc}"
+  },
+  "help": {
+    "body": "Команды: {p}погода [город] | {p}weather [city] | {p}помощь | {p}help"
+  },
+  "admin": {
+    "shutdown_ok": "Останавливаюсь."
+  }
+}

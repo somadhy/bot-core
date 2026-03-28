@@ -1,0 +1,18 @@
+{
+  "errors": {
+    "no_default_city": "No city given and default_city is not set.",
+    "weather_not_configured": "Weather: WEATHER_API_KEY is not set.",
+    "weather_failed": "Weather: error ({detail})",
+    "city_not_found": "City not found.",
+    "internal": "Bot error."
+  },
+  "weather": {
+    "line": "{city}: {temp}C, {desc}"
+  },
+  "help": {
+    "body": "Commands: {p}weather [city] | {p}погода [город] | {p}help | {p}помощь"
+  },
+  "admin": {
+    "shutdown_ok": "Shutting down."
+  }
+}

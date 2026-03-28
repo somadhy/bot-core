@@ -1,0 +1,19 @@
+# USB serial on Linux: adjust device path. WEATHER_API_KEY in .env on host.
+#
+#   echo WEATHER_API_KEY=your_key >> .env
+#   docker compose up --build
+#
+# If the bot exits with code 0 (admin stop) and you use unless-stopped, the
+# container will restart — use `docker compose stop` or restart: "no" to stay down.
+
+services:
+  bot:
+    build: .
+    devices:
+      - ${SERIAL_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    environment:
+      WEATHER_API_KEY: ${WEATHER_API_KEY:-}
+    restart: unless-stopped

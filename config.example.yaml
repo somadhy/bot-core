@@ -1,0 +1,27 @@
+# Copy to config.yaml and adjust. Path: MESHCORE_BOT_CONFIG or ./config.yaml
+
+serial:
+  device: /dev/ttyUSB0   # Windows: COM3
+  baudrate: 115200
+
+channels:
+  enabled_indices: [0]
+
+dm:
+  enabled: true
+
+locale: ru   # ru | en
+
+commands:
+  prefix: "!"
+
+weather:
+  provider: openweathermap
+  default_city: Moscow
+
+blacklist:
+  path: data/blacklist.json
+
+admins:
+  # Full public keys (hex, 64 chars typical). Remote stop: !stop / !стоп — only in DM (sender known).
+  public_keys: []
