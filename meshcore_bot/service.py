@@ -161,8 +161,13 @@ class BotService:
                 text[:120],
             )
             return
-        # Channel packets do not carry sender pubkey; admin stop is DM-only.
         if parsed.kind == CmdKind.STOP:
+            if ch not in self._cfg.admin_channel_indices:
+                return
+            out = _reply_mention(nick, self._i18n.t("admin.shutdown_ok"))
+            logger.info("stop on admin channel_idx=%s → shutdown", ch)
+            await self._send_chan(ch, out)
+            self._shutdown.set()
             return
 
         if parsed.kind == CmdKind.HELP:
@@ -198,6 +203,11 @@ class BotService:
         nick = _dm_sender_label(contact, pubkey_prefix)
         parsed = parse_incoming(text)
         if parsed.kind == CmdKind.NONE:
+            logger.debug(
+                "CONTACT_MSG_RECV: not a bot command, ignored (preview=%r pubkey_prefix=%s)",
+                text[:120],
+                pubkey_prefix,
+            )
             return
 
         dst = self._resolve_dm_dst(pubkey_prefix)

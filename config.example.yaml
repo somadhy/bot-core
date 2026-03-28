@@ -38,5 +38,7 @@ blacklist:
   path: data/blacklist.json
 
 admins:
-  # Full public keys (hex, 64 chars typical). Remote stop: stop / стоп — only in DM (sender known).
+  # Full public keys (hex, 64 chars typical). Remote stop: stop / стоп — in DM (sender known).
   public_keys: []
+  # Индексы каналов (должны быть в channels.enabled_indices), где stop / стоп разрешён любому участнику.
+  channel_indices: []

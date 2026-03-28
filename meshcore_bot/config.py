@@ -26,6 +26,8 @@ class BotConfig:
     advert_interval_hours: float
     advert_flood: bool
     admin_public_keys: list[str] = field(default_factory=list)
+    # Channel indices where `stop` is allowed for any sender (no pubkey; channel-only).
+    admin_channel_indices: list[int] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], base_dir: Path) -> BotConfig:
@@ -46,6 +48,22 @@ class BotConfig:
 
         keys = [str(k).strip().lower() for k in (admins.get("public_keys") or []) if str(k).strip()]
 
+        enabled = list(channels.get("enabled_indices") or [])
+        admin_chans: list[int] = []
+        for x in admins.get("channel_indices") or []:
+            try:
+                admin_chans.append(int(x))
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"admins.channel_indices must be a list of integers, got invalid entry: {x!r}"
+                ) from None
+        for idx in admin_chans:
+            if idx not in enabled:
+                raise ValueError(
+                    f"admins.channel_indices entry {idx} must be listed in channels.enabled_indices "
+                    f"(currently {enabled!r})"
+                )
+
         try:
             reply_delay_sec = float(raw.get("reply_delay_sec", 0) or 0)
         except (TypeError, ValueError):
@@ -65,7 +83,7 @@ class BotConfig:
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
-            channels_enabled=list(channels.get("enabled_indices") or []),
+            channels_enabled=enabled,
             dm_enabled=bool(dm.get("enabled", True)),
             locale=loc,  # type: ignore[arg-type]
             weather_provider=str(weather.get("provider", "openmeteo")),
@@ -77,6 +95,7 @@ class BotConfig:
             advert_interval_hours=advert_interval_hours,
             advert_flood=bool(advert.get("flood", False)),
             admin_public_keys=keys,
+            admin_channel_indices=admin_chans,
         )
 
 
