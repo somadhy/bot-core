@@ -90,6 +90,7 @@ python -m meshcore_bot --diagnose
 
 - **`locale`**: `ru` | `en`
 - **`reply_delay_sec`**: пауза в секундах перед ответом (0 — нет; максимум 600)
+- **`advert.interval_hours`**: периодический адверт узла через meshcore (`send_advert`); `0` — выключено; **`advert.flood`**: широкий адверт (зависит от прошивки)
 - **`weather.provider`**: `openmeteo` (по умолчанию) или `openweathermap` (нужен `WEATHER_API_KEY`)
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex) для удалённой остановки

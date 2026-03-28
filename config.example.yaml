@@ -22,6 +22,12 @@ locale: ru   # ru | en
 # Пауза перед любым ответом бота (секунды). Максимум 600. 0 — без задержки.
 reply_delay_sec: 0
 
+# Периодический адверт узла (meshcore send_advert). 0 — выключено.
+# Первый адверт после первого полного интервала с момента старта бота.
+advert:
+  interval_hours: 0
+  flood: true   # true — широкий «flood»-адверт (см. прошивку / meshcore)
+
 weather:
   # openmeteo — без API-ключа, обычно доступен из РФ (api.open-meteo.com)
   # openweathermap — нужен WEATHER_API_KEY

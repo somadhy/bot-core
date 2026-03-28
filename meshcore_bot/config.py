@@ -23,6 +23,8 @@ class BotConfig:
     weather_default_city: str
     blacklist_path: Path
     reply_delay_sec: float
+    advert_interval_hours: float
+    advert_flood: bool
     admin_public_keys: list[str] = field(default_factory=list)
 
     @classmethod
@@ -33,6 +35,7 @@ class BotConfig:
         weather = raw.get("weather") or {}
         blacklist = raw.get("blacklist") or {}
         admins = raw.get("admins") or {}
+        advert = raw.get("advert") or {}
 
         loc = str(raw.get("locale", "en")).lower()
         if loc not in ("ru", "en"):
@@ -49,6 +52,16 @@ class BotConfig:
             reply_delay_sec = 0.0
         reply_delay_sec = max(0.0, min(reply_delay_sec, 600.0))
 
+        try:
+            advert_interval_hours = float(advert.get("interval_hours", 0) or 0)
+        except (TypeError, ValueError):
+            advert_interval_hours = 0.0
+        if advert_interval_hours < 0:
+            advert_interval_hours = 0.0
+        # Cap to avoid accidental huge values (e.g. typo); ~1 year
+        if advert_interval_hours > 8760.0:
+            advert_interval_hours = 8760.0
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
@@ -61,6 +74,8 @@ class BotConfig:
             ).strip(),
             blacklist_path=blacklist_path,
             reply_delay_sec=reply_delay_sec,
+            advert_interval_hours=advert_interval_hours,
+            advert_flood=bool(advert.get("flood", False)),
             admin_public_keys=keys,
         )
 

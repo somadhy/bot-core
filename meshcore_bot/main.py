@@ -16,6 +16,7 @@ from meshcore_bot.channel_info import (
     format_companion_table_line,
     format_listening_line,
 )
+from meshcore_bot.advert_task import run_periodic_advert
 from meshcore_bot.config import load_config
 from meshcore_bot.i18n import I18n
 from meshcore_bot.message_poll import run_serial_message_poll
@@ -62,6 +63,11 @@ async def async_main() -> int:
     poll_task = asyncio.create_task(
         run_serial_message_poll(mesh, shutdown, frozenset(cfg.channels_enabled))
     )
+    advert_task: asyncio.Task[None] | None = None
+    if cfg.advert_interval_hours > 0:
+        advert_task = asyncio.create_task(
+            run_periodic_advert(mesh, shutdown, cfg.advert_interval_hours, cfg.advert_flood)
+        )
 
     try:
         ch_table = await fetch_channel_table(mesh, cfg.channels_enabled)
@@ -70,9 +76,14 @@ async def async_main() -> int:
         ch_table = {}
 
     logger.info(
-        "Bot running (locale=%s, dm=%s)",
+        "Bot running (locale=%s, dm=%s, advert=%s)",
         cfg.locale,
         cfg.dm_enabled,
+        (
+            f"every {cfg.advert_interval_hours:.3g} h (flood={cfg.advert_flood})"
+            if cfg.advert_interval_hours > 0
+            else "off"
+        ),
     )
     logger.info(
         "Channels the bot listens to (from config channels.enabled_indices): %s",
@@ -85,6 +96,12 @@ async def async_main() -> int:
 
     await shutdown.wait()
 
+    if advert_task is not None:
+        advert_task.cancel()
+        try:
+            await advert_task
+        except asyncio.CancelledError:
+            pass
     poll_task.cancel()
     try:
         await poll_task
