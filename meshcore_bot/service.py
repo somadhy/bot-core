@@ -97,7 +97,9 @@ class BotService:
         if self._cfg.dm_enabled:
             self._mesh.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_msg)
 
-    async def _send_chan(self, channel_idx: int, text: str) -> None:
+    async def _send_chan(
+        self, channel_idx: int, text: str, *, kind: str | None = None
+    ) -> None:
         d = self._cfg.reply_delay_sec
         if d > 0:
             await asyncio.sleep(d)
@@ -106,10 +108,17 @@ class BotService:
             r = await self._mesh.commands.send_chan_msg(channel_idx, msg)
             if r.type == EventType.ERROR:
                 logger.warning("send_chan_msg error: %s", r.payload)
+            else:
+                logger.info(
+                    "reply sent kind=%s channel_idx=%s len=%s",
+                    kind or "reply",
+                    channel_idx,
+                    len(msg),
+                )
         except Exception:
             logger.exception("send_chan_msg failed")
 
-    async def _send_dm(self, dst: Any, text: str) -> None:
+    async def _send_dm(self, dst: Any, text: str, *, kind: str | None = None) -> None:
         if dst is None:
             logger.warning("No destination for DM reply")
             return
@@ -121,6 +130,8 @@ class BotService:
             r = await self._mesh.commands.send_msg(dst, msg)
             if r.type == EventType.ERROR:
                 logger.warning("send_msg error: %s", r.payload)
+            else:
+                logger.info("reply sent kind=%s dm len=%s", kind or "reply", len(msg))
         except Exception:
             logger.exception("send_msg failed")
 
@@ -165,27 +176,27 @@ class BotService:
             if ch not in self._cfg.admin_channel_indices:
                 return
             out = _reply_mention(nick, self._i18n.t("admin.shutdown_ok"))
-            logger.info("stop on admin channel_idx=%s → shutdown", ch)
-            await self._send_chan(ch, out)
+            await self._send_chan(ch, out, kind="stop")
             self._shutdown.set()
             return
 
         if parsed.kind == CmdKind.HELP:
             body = self._i18n.t("help.body")
             out = _reply_mention(nick, body)
-            logger.info("help on channel_idx=%s → reply (%d chars)", ch, len(out))
-            await self._send_chan(ch, out)
+            await self._send_chan(ch, out, kind="help")
             return
 
         if parsed.kind == CmdKind.WEATHER:
             city = (parsed.arg or "").strip() or (self._cfg.weather_default_city or "").strip()
             if not city:
                 await self._send_chan(
-                    ch, _weather_reply(nick, self._i18n.t("errors.no_default_city"))
+                    ch,
+                    _weather_reply(nick, self._i18n.t("errors.no_default_city")),
+                    kind="weather",
                 )
                 return
             line = await fetch_weather_line(city, self._cfg, self._i18n)
-            await self._send_chan(ch, _weather_reply(nick, line))
+            await self._send_chan(ch, _weather_reply(nick, line), kind="weather")
 
     async def _on_contact_msg(self, event: Event) -> None:
         payload = event.payload if isinstance(event.payload, dict) else {}
@@ -223,13 +234,15 @@ class BotService:
             if not is_admin(public_key, self._cfg.admin_public_keys):
                 return
             await self._send_dm(
-                dst, _reply_mention(nick, self._i18n.t("admin.shutdown_ok"))
+                dst, _reply_mention(nick, self._i18n.t("admin.shutdown_ok")), kind="stop"
             )
             self._shutdown.set()
             return
 
         if parsed.kind == CmdKind.HELP:
-            await self._send_dm(dst, _reply_mention(nick, self._i18n.t("help.body")))
+            await self._send_dm(
+                dst, _reply_mention(nick, self._i18n.t("help.body")), kind="help"
+            )
             return
 
         if parsed.kind == CmdKind.WEATHER:
@@ -238,7 +251,8 @@ class BotService:
                 await self._send_dm(
                     dst,
                     _weather_reply(nick, self._i18n.t("errors.no_default_city")),
+                    kind="weather",
                 )
                 return
             line = await fetch_weather_line(city, self._cfg, self._i18n)
-            await self._send_dm(dst, _weather_reply(nick, line))
+            await self._send_dm(dst, _weather_reply(nick, line), kind="weather")
