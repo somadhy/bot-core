@@ -96,4 +96,4 @@ python -m meshcore_bot --diagnose
 
 ## Лицензия
 
-MIT (при необходимости добавьте файл LICENSE).
+MIT.
