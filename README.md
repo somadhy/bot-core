@@ -24,6 +24,17 @@ python -m meshcore_bot
 - **Ubuntu**, serial: обычно `/dev/ttyUSB0` или `/dev/ttyACM0` (права `dialout` при необходимости).
 - **Windows**: порт `COM3` и т.д. в `config.yaml`.
 
+## Диагностика (без запуска бота)
+
+После `cp config.example.yaml config.yaml` и правки `serial.device`:
+
+```bash
+python -m meshcore_bot --diagnose
+# кратко:  python -m meshcore_bot -d
+```
+
+Выводится связь с Companion, краткие **SELF_INFO** / **DEVICE_INFO**, батарея (если доступна), таблица **каналов с индексами** (`[0]`, `[1]`, …) и именами. Эти индексы нужны для `channels.enabled_indices` в конфиге. **`WEATHER_API_KEY` для диагностики не нужен.**
+
 ## Docker (Linux-хост)
 
 ```bash

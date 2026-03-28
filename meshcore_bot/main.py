@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 import sys
@@ -66,6 +67,20 @@ async def async_main() -> int:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="MeshCore Companion bot")
+    parser.add_argument(
+        "--diagnose",
+        "-d",
+        action="store_true",
+        help="Show device info and channel indices, then exit (does not run the bot).",
+    )
+    args = parser.parse_args()
+    if args.diagnose:
+        from meshcore_bot.diagnose import main as diagnose_main
+
+        diagnose_main()
+        return
+
     try:
         code = asyncio.run(async_main())
     except KeyboardInterrupt:

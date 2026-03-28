@@ -1,4 +1,8 @@
 # Copy to config.yaml and adjust. Path: MESHCORE_BOT_CONFIG or ./config.yaml
+#
+# Проверка Companion и список каналов (индексы для channels.enabled_indices):
+#   python -m meshcore_bot --diagnose
+#   (бот не запускается, только опрос устройства по serial из этого конфига)
 
 serial:
   device: /dev/ttyUSB0   # Windows: COM3
