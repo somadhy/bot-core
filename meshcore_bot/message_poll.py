@@ -76,20 +76,23 @@ async def run_serial_message_poll(
     else:
         logger.info("Message poll: keepalive disabled (MESHCORE_BOT_KEEPALIVE_SEC=0)")
 
-    last_rx_wall = time.monotonic()
+    last_msg_wall = time.monotonic()
+    last_link_wall = time.monotonic()
     last_keepalive_wall = 0.0
     while not shutdown.is_set():
         try:
             now = time.monotonic()
             if (
                 keepalive_sec > 0
-                and (now - last_rx_wall) >= keepalive_only_when_idle_sec
+                and (now - last_msg_wall) >= keepalive_only_when_idle_sec
                 and (now - last_keepalive_wall) >= keepalive_sec
             ):
                 try:
                     ev = await mesh.commands.send_device_query()
                     if trace:
                         logger.info("keepalive send_device_query → %s payload=%s", ev.type, _short_payload(ev))
+                    if ev.type != EventType.ERROR:
+                        last_link_wall = time.monotonic()
                 except Exception:
                     logger.exception("keepalive send_device_query failed")
                 last_keepalive_wall = now
@@ -97,6 +100,7 @@ async def run_serial_message_poll(
             r = await mesh.commands.get_msg(timeout=timeout)
             if trace:
                 logger.info("get_msg → %s payload=%s", r.type, _short_payload(r))
+            last_link_wall = time.monotonic()
 
             if r.type == EventType.CHANNEL_MSG_RECV:
                 pl = r.payload if isinstance(r.payload, dict) else {}
@@ -118,7 +122,7 @@ async def run_serial_message_poll(
                         ch,
                         preview,
                     )
-                last_rx_wall = time.monotonic()
+                last_msg_wall = time.monotonic()
             elif r.type == EventType.CONTACT_MSG_RECV:
                 pl = r.payload if isinstance(r.payload, dict) else {}
                 logger.info(
@@ -126,29 +130,35 @@ async def run_serial_message_poll(
                     pl.get("pubkey_prefix"),
                     (str(pl.get("text", "")))[:120],
                 )
-                last_rx_wall = time.monotonic()
+                last_msg_wall = time.monotonic()
 
             if r.type == EventType.NO_MORE_MSGS:
-                if time.monotonic() - last_rx_wall > 90.0:
-                    logger.warning(
-                        "No CHANNEL/CONTACT message from companion via get_msg() for 90s "
-                        "(only NO_MORE_MSGS/idle). Traffic may not reach this USB node, or "
-                        "another app holds the serial port. Try: MESHCORE_BOT_TRACE_POLL=1 "
-                        "and confirm only one process uses the radio."
-                    )
-                    last_rx_wall = time.monotonic()
+                if time.monotonic() - last_msg_wall > 90.0:
+                    if time.monotonic() - last_link_wall > 90.0:
+                        logger.warning(
+                            "No CHANNEL/CONTACT message from companion via get_msg() for 90s "
+                            "(only NO_MORE_MSGS/idle, and no successful link activity). "
+                            "Traffic may not reach this USB node, or another app holds the serial port. "
+                            "Try: MESHCORE_BOT_TRACE_POLL=1 and confirm only one process uses the radio."
+                        )
+                    else:
+                        logger.info(
+                            "No CHANNEL/CONTACT message for 90s (only NO_MORE_MSGS/idle), "
+                            "but link appears alive (poll/keepalive succeeds)."
+                        )
+                    last_msg_wall = time.monotonic()
                 await asyncio.sleep(idle)
                 continue
             if r.type == EventType.ERROR:
                 pl = r.payload if isinstance(r.payload, dict) else {}
                 reason = pl.get("reason")
                 if reason in ("timeout", "no_event_received"):
-                    if time.monotonic() - last_rx_wall > 90.0:
+                    if time.monotonic() - last_link_wall > 90.0:
                         logger.warning(
                             "get_msg only timeouts/no_event for 90s — check USB companion "
                             "and that this container is the only user of the serial device."
                         )
-                        last_rx_wall = time.monotonic()
+                        last_link_wall = time.monotonic()
                     await asyncio.sleep(idle)
                     continue
                 logger.warning("get_msg error: %s", r.payload)
