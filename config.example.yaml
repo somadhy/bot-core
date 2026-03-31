@@ -53,3 +53,17 @@ admins:
   public_keys: []
   # Индексы каналов (должны быть в channels.enabled_indices), где stop / стоп разрешён любому участнику.
   channel_indices: []
+
+commands:
+  # Дополнительные алиасы для текстовых команд бота.
+  # По умолчанию:
+  #   weather / погода
+  #   help / помощь
+  #   stop / стоп
+  # Здесь можно добавить короткие синонимы, например `wz` для погоды.
+  weather:
+    aliases: []
+  help:
+    aliases: []
+  stop:
+    aliases: []

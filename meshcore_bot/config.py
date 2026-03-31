@@ -31,6 +31,9 @@ class BotConfig:
     admin_public_keys: list[str] = field(default_factory=list)
     # Channel indices where `stop` is allowed for any sender (no pubkey; channel-only).
     admin_channel_indices: list[int] = field(default_factory=list)
+    # Extra aliases for commands, loaded from config.yaml. Keys are canonical command
+    # names ("weather", "help", "stop"); values are lists of additional trigger words.
+    command_aliases: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], base_dir: Path) -> BotConfig:
@@ -42,6 +45,7 @@ class BotConfig:
         admins = raw.get("admins") or {}
         advert = raw.get("advert") or {}
         poll = raw.get("poll") or {}
+        commands = raw.get("commands") or {}
 
         loc = str(raw.get("locale", "en")).lower()
         if loc not in ("ru", "en"):
@@ -116,6 +120,34 @@ class BotConfig:
         if poll_keepalive_only_when_idle_sec > 3600.0:
             poll_keepalive_only_when_idle_sec = 3600.0
 
+        # Optional command aliases:
+        # commands:
+        #   weather:
+        #     aliases: [wz, w]
+        #   help:
+        #     aliases: [h]
+        #   stop:
+        #     aliases: []
+        def _aliases_for(cmd_name: str) -> list[str]:
+            bag = commands.get(cmd_name) or {}
+            raw_aliases = bag.get("aliases") or []
+            result: list[str] = []
+            for val in raw_aliases:
+                s = str(val).strip()
+                if not s:
+                    continue
+                # Normalize like in router: casefold and strip trailing ":".
+                s_norm = s.casefold().rstrip(":")
+                if s_norm:
+                    result.append(s_norm)
+            return result
+
+        command_aliases = {
+            "weather": _aliases_for("weather"),
+            "help": _aliases_for("help"),
+            "stop": _aliases_for("stop"),
+        }
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
@@ -135,6 +167,7 @@ class BotConfig:
             advert_flood=bool(advert.get("flood", False)),
             admin_public_keys=keys,
             admin_channel_indices=admin_chans,
+            command_aliases=command_aliases,
         )
 
 

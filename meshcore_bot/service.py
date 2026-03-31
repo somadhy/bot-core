@@ -164,7 +164,7 @@ class BotService:
             text[:120],
         )
         nick = _channel_sender_label(text)
-        parsed = parse_incoming(text)
+        parsed = parse_incoming(text, self._cfg)
         if parsed.kind == CmdKind.NONE:
             logger.debug(
                 "channel idx=%s: not a bot command, ignored (text=%r)",
@@ -212,7 +212,7 @@ class BotService:
             return
 
         nick = _dm_sender_label(contact, pubkey_prefix)
-        parsed = parse_incoming(text)
+        parsed = parse_incoming(text, self._cfg)
         if parsed.kind == CmdKind.NONE:
             logger.debug(
                 "CONTACT_MSG_RECV: not a bot command, ignored (preview=%r pubkey_prefix=%s)",
