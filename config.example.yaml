@@ -28,6 +28,15 @@ advert:
   interval_hours: 0
   flood: true   # true — широкий «flood»-адверт (см. прошивку / meshcore)
 
+poll:
+  # Keepalive (чтобы USB/companion/радио не "засыпали" при простое).
+  # 0 — выключить. Можно переопределить env-переменными:
+  #   MESHCORE_BOT_KEEPALIVE_SEC
+  #   MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC
+  keepalive_sec: 60
+  # Keepalive шлётся только если не было RX ≥ N секунд (защита от лишних запросов).
+  keepalive_only_when_idle_sec: 30
+
 weather:
   # openmeteo — без API-ключа, обычно доступен из РФ (api.open-meteo.com)
   # openweathermap — нужен WEATHER_API_KEY

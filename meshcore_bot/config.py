@@ -19,6 +19,8 @@ class BotConfig:
     channels_enabled: list[int]
     dm_enabled: bool
     locale: Locale
+    poll_keepalive_sec: float
+    poll_keepalive_only_when_idle_sec: float
     weather_provider: str
     weather_default_city: str
     weather_cache_ttl_minutes: float
@@ -39,6 +41,7 @@ class BotConfig:
         blacklist = raw.get("blacklist") or {}
         admins = raw.get("admins") or {}
         advert = raw.get("advert") or {}
+        poll = raw.get("poll") or {}
 
         loc = str(raw.get("locale", "en")).lower()
         if loc not in ("ru", "en"):
@@ -95,12 +98,32 @@ class BotConfig:
         if weather_cache_ttl_minutes > 10080.0:
             weather_cache_ttl_minutes = 10080.0
 
+        def _f(name: str, default: float) -> float:
+            try:
+                return float(poll.get(name, default))
+            except (TypeError, ValueError):
+                return default
+
+        poll_keepalive_sec = _f("keepalive_sec", 60.0)
+        if poll_keepalive_sec < 0:
+            poll_keepalive_sec = 0.0
+        if poll_keepalive_sec > 3600.0:
+            poll_keepalive_sec = 3600.0
+
+        poll_keepalive_only_when_idle_sec = _f("keepalive_only_when_idle_sec", 30.0)
+        if poll_keepalive_only_when_idle_sec < 0:
+            poll_keepalive_only_when_idle_sec = 0.0
+        if poll_keepalive_only_when_idle_sec > 3600.0:
+            poll_keepalive_only_when_idle_sec = 3600.0
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
             channels_enabled=enabled,
             dm_enabled=bool(dm.get("enabled", True)),
             locale=loc,  # type: ignore[arg-type]
+            poll_keepalive_sec=poll_keepalive_sec,
+            poll_keepalive_only_when_idle_sec=poll_keepalive_only_when_idle_sec,
             weather_provider=str(weather.get("provider", "openmeteo")),
             weather_default_city=str(
                 weather.get("default_city") or weather.get("city") or ""

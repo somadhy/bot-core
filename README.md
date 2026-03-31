@@ -91,10 +91,25 @@ python -m meshcore_bot --diagnose
 - **`locale`**: `ru` | `en`
 - **`reply_delay_sec`**: пауза в секундах перед ответом (0 — нет; максимум 600)
 - **`advert.interval_hours`**: периодический адверт узла через meshcore (`send_advert`); `0` — выключено; **`advert.flood`**: широкий адверт (зависит от прошивки)
+- **`poll.keepalive_sec`**: keepalive для USB/companion при простое (по умолчанию 60; `0` — выключить). Можно переопределить `MESHCORE_BOT_KEEPALIVE_SEC`
+- **`poll.keepalive_only_when_idle_sec`**: keepalive шлётся только если не было входящих сообщений ≥ N секунд (по умолчанию 30). Можно переопределить `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC`
 - **`weather.provider`**: `openmeteo` (по умолчанию) или `openweathermap` (нужен `WEATHER_API_KEY`)
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex) для удалённой остановки
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет
+
+### Keepalive и предупреждение «No CHANNEL/CONTACT ... for 90s»
+
+Если в логе периодически появляется предупреждение про отсутствие сообщений 90s и через время бот перестаёт реагировать/отправлять, это часто похоже на “засыпание” USB/companion/радио при полном простое.
+
+Решение: включить keepalive (по умолчанию он включён в `config.example.yaml`):
+
+- **В `config.yaml`**:
+  - `poll.keepalive_sec: 60`
+  - `poll.keepalive_only_when_idle_sec: 30`
+- **Через окружение (перезаписывает конфиг)**:
+  - `MESHCORE_BOT_KEEPALIVE_SEC=60` (`0` — выключить)
+  - `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC=30`
 
 ### Личка: «Fail» у отправителя, а у соседей ЛС ходит
 

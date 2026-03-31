@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_IDLE_SEC = 0.7
 _DEFAULT_GET_MSG_TIMEOUT = 4.0
+_DEFAULT_KEEPALIVE_SEC = 60.0
+_DEFAULT_KEEPALIVE_ONLY_WHEN_IDLE_SEC = 30.0
 
 
 def _short_payload(r) -> str:
@@ -37,11 +39,23 @@ async def run_serial_message_poll(
     mesh: MeshCore,
     shutdown: asyncio.Event,
     enabled_channel_indices: frozenset[int],
+    *,
+    keepalive_sec: float = _DEFAULT_KEEPALIVE_SEC,
+    keepalive_only_when_idle_sec: float = _DEFAULT_KEEPALIVE_ONLY_WHEN_IDLE_SEC,
 ) -> None:
     idle = float(os.environ.get("MESHCORE_BOT_POLL_IDLE_SEC", _DEFAULT_IDLE_SEC))
     idle = max(0.2, min(idle, 30.0))
     timeout = float(os.environ.get("MESHCORE_BOT_GET_MSG_TIMEOUT", _DEFAULT_GET_MSG_TIMEOUT))
     timeout = max(0.5, min(timeout, 120.0))
+
+    # Keepalive can be configured via config.yaml (passed in) and overridden via env.
+    # 0 disables keepalive.
+    keepalive_sec = float(os.environ.get("MESHCORE_BOT_KEEPALIVE_SEC", keepalive_sec))
+    keepalive_sec = max(0.0, min(keepalive_sec, 3600.0))
+    keepalive_only_when_idle_sec = float(
+        os.environ.get("MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC", keepalive_only_when_idle_sec)
+    )
+    keepalive_only_when_idle_sec = max(0.0, min(keepalive_only_when_idle_sec, 3600.0))
 
     trace = os.environ.get("MESHCORE_BOT_TRACE_POLL", "").lower() in ("1", "true", "yes")
 
@@ -52,10 +66,34 @@ async def run_serial_message_poll(
         timeout,
         idle,
     )
+    if keepalive_sec > 0:
+        logger.info(
+            "Message poll: keepalive enabled (every %.1fs when idle>=%.1fs); "
+            "set MESHCORE_BOT_KEEPALIVE_SEC=0 to disable",
+            keepalive_sec,
+            keepalive_only_when_idle_sec,
+        )
+    else:
+        logger.info("Message poll: keepalive disabled (MESHCORE_BOT_KEEPALIVE_SEC=0)")
 
     last_rx_wall = time.monotonic()
+    last_keepalive_wall = 0.0
     while not shutdown.is_set():
         try:
+            now = time.monotonic()
+            if (
+                keepalive_sec > 0
+                and (now - last_rx_wall) >= keepalive_only_when_idle_sec
+                and (now - last_keepalive_wall) >= keepalive_sec
+            ):
+                try:
+                    ev = await mesh.commands.send_device_query()
+                    if trace:
+                        logger.info("keepalive send_device_query → %s payload=%s", ev.type, _short_payload(ev))
+                except Exception:
+                    logger.exception("keepalive send_device_query failed")
+                last_keepalive_wall = now
+
             r = await mesh.commands.get_msg(timeout=timeout)
             if trace:
                 logger.info("get_msg → %s payload=%s", r.type, _short_payload(r))

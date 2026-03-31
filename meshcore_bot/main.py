@@ -61,7 +61,13 @@ async def async_main() -> int:
     svc.attach()
     # Continuous get_msg — see message_poll.py (start_auto_message_fetching alone can stall).
     poll_task = asyncio.create_task(
-        run_serial_message_poll(mesh, shutdown, frozenset(cfg.channels_enabled))
+        run_serial_message_poll(
+            mesh,
+            shutdown,
+            frozenset(cfg.channels_enabled),
+            keepalive_sec=cfg.poll_keepalive_sec,
+            keepalive_only_when_idle_sec=cfg.poll_keepalive_only_when_idle_sec,
+        )
     )
     advert_task: asyncio.Task[None] | None = None
     if cfg.advert_interval_hours > 0:
