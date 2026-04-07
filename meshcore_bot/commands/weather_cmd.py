@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import datetime as _dt
+import gzip
+import io
 import logging
+import math
 import os
+import sqlite3
 import time
 from typing import TYPE_CHECKING
 
@@ -21,6 +27,9 @@ logger = logging.getLogger(__name__)
 _weather_lock = asyncio.Lock()
 # (provider, locale, city_lower) -> (expires_monotonic, line)
 _weather_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
+
+_meteostat_lock = asyncio.Lock()
+_meteostat_db_local_path: str | None = None
 
 
 def _weather_cache_key(city: str, provider_norm: str, locale: str) -> tuple[str, str, str]:
@@ -44,6 +53,9 @@ OWM_WEATHER_URL = "https://api.openweathermap.org/data/2.5/weather"
 
 OPEN_METEO_GEOCODE = "https://geocoding-api.open-meteo.com/v1/search"
 OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
+
+METEOSTAT_STATIONS_DB_URL = "https://data.meteostat.net/stations.db"
+METEOSTAT_BULK_BASE = "https://data.meteostat.net"
 
 # WMO code → one condition emoji (locale-independent)
 _WMO_EMOJI: dict[int, str] = {
@@ -143,43 +155,318 @@ def _format_weather_line(
 
 
 async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
-    provider = (cfg.weather_provider or "openmeteo").strip().lower()
-    if provider in ("openmeteo", "open-meteo"):
-        provider_norm = "openmeteo"
-    elif provider in ("openweathermap", "owm"):
-        provider_norm = "openweathermap"
-    else:
-        provider_norm = provider
+    def _norm(p: str) -> str:
+        p = (p or "").strip().lower()
+        if p in ("openmeteo", "open-meteo"):
+            return "openmeteo"
+        if p in ("openweathermap", "owm"):
+            return "openweathermap"
+        if p in ("meteostat", "meteostat.net"):
+            return "meteostat"
+        return p
+
+    primary_raw = cfg.weather_provider or "openmeteo"
+    fallback_raw = getattr(cfg, "weather_provider_fallback", "") or ""
+
+    primary = _norm(primary_raw)
+    fallback = _norm(fallback_raw)
+
+    providers: list[str] = []
+    if primary:
+        providers.append(primary)
+    if fallback and fallback != primary:
+        providers.append(fallback)
 
     ttl_min = float(cfg.weather_cache_ttl_minutes or 0)
-    key = _weather_cache_key(city, provider_norm, str(cfg.locale))
 
-    if ttl_min > 0:
-        async with _weather_lock:
-            now = time.monotonic()
-            _weather_prune_expired(now)
-            hit = _weather_cache.get(key)
-            if hit is not None:
-                exp, line = hit
-                if now < exp:
-                    logger.debug("weather cache hit city=%r provider=%s", city.strip(), provider_norm)
-                    return line
+    last_line: str | None = None
+    for idx, provider_norm in enumerate(providers):
+        if ttl_min > 0:
+            key = _weather_cache_key(city, provider_norm, str(cfg.locale))
+            async with _weather_lock:
+                now = time.monotonic()
+                _weather_prune_expired(now)
+                hit = _weather_cache.get(key)
+                if hit is not None:
+                    exp, line = hit
+                    if now < exp:
+                        logger.debug(
+                            "weather cache hit city=%r provider=%s", city.strip(), provider_norm
+                        )
+                        return line
 
-    if provider in ("openmeteo", "open-meteo"):
-        ok, line = await _fetch_open_meteo(city, cfg, i18n)
-    elif provider in ("openweathermap", "owm"):
-        ok, line = await _fetch_open_weather_map(city, cfg, i18n)
-    else:
-        ok, line = False, i18n.t("errors.weather_failed", detail="unsupported provider")
+        if provider_norm == "openmeteo":
+            ok, line = await _fetch_open_meteo(city, cfg, i18n)
+        elif provider_norm == "openweathermap":
+            ok, line = await _fetch_open_weather_map(city, cfg, i18n)
+        elif provider_norm == "meteostat":
+            ok, line = await _fetch_meteostat(city, cfg, i18n)
+        else:
+            ok, line = False, i18n.t("errors.weather_failed", detail="unsupported provider")
 
-    if ok and ttl_min > 0:
-        async with _weather_lock:
-            now = time.monotonic()
-            _weather_prune_expired(now)
-            _weather_cache[key] = (now + ttl_min * 60.0, line)
-            logger.debug("weather cache store key=%s ttl_min=%s", key, ttl_min)
+        if ok:
+            if ttl_min > 0:
+                key = _weather_cache_key(city, provider_norm, str(cfg.locale))
+                async with _weather_lock:
+                    now = time.monotonic()
+                    _weather_prune_expired(now)
+                    _weather_cache[key] = (now + ttl_min * 60.0, line)
+                    logger.debug("weather cache store key=%s ttl_min=%s", key, ttl_min)
+            if idx > 0:
+                logger.info(
+                    "weather provider fallback used primary=%s fallback=%s city=%r",
+                    primary,
+                    provider_norm,
+                    city.strip(),
+                )
+            return line
 
-    return line
+        last_line = line
+        if idx + 1 < len(providers):
+            logger.warning(
+                "weather provider failed, trying fallback: provider=%s city=%r",
+                provider_norm,
+                city.strip(),
+            )
+
+    return last_line or i18n.t("errors.weather_failed", detail="no providers configured")
+
+
+def _meteostat_coco_to_wmo_bucket(coco: int | None) -> int:
+    # Meteostat weather condition codes: https://dev.meteostat.net/formats.html
+    if coco is None:
+        return 3
+    c = int(coco)
+    if c == 1:
+        return 0
+    if c == 2:
+        return 1
+    if c == 3:
+        return 2
+    if c == 4:
+        return 3
+    if c in (5, 6):
+        return 45
+    if 7 <= c <= 11:
+        return 63
+    if c in (12, 13, 19, 20):
+        return 80
+    if c in (14, 15, 16, 21, 22):
+        return 71
+    if c in (23, 24, 25, 26, 27):
+        return 95
+    return 3
+
+
+def _meteostat_kmh_to_ms(kmh: float) -> float:
+    return float(kmh) / 3.6
+
+
+async def _meteostat_ensure_stations_db() -> str:
+    """Download stations.db once and reuse it between requests."""
+    global _meteostat_db_local_path
+    if _meteostat_db_local_path is not None:
+        return _meteostat_db_local_path
+
+    path = "/tmp/meshcore_bot_meteostat_stations.db"
+    try:
+        st = os.stat(path)
+        # Refresh roughly monthly
+        if (time.time() - float(st.st_mtime)) < 30.0 * 24.0 * 3600.0 and st.st_size > 1024 * 1024:
+            _meteostat_db_local_path = path
+            return path
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(METEOSTAT_STATIONS_DB_URL)
+        r.raise_for_status()
+        tmp = f"{path}.tmp"
+        with open(tmp, "wb") as f:
+            f.write(r.content)
+        os.replace(tmp, path)
+
+    _meteostat_db_local_path = path
+    return path
+
+
+def _meteostat_station_candidates(db_path: str, lat: float, lon: float, limit: int = 12) -> list[str]:
+    dlat = 2.0
+    dlon = 3.0
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        cur = con.execute(
+            """
+            SELECT id, latitude, longitude
+            FROM stations
+            WHERE latitude BETWEEN ? AND ?
+              AND longitude BETWEEN ? AND ?
+            LIMIT 500
+            """,
+            (lat - dlat, lat + dlat, lon - dlon, lon + dlon),
+        )
+        rows = cur.fetchall()
+    finally:
+        con.close()
+
+    def _dist2(r: sqlite3.Row) -> float:
+        la = float(r["latitude"])
+        lo = float(r["longitude"])
+        x = (lo - lon) * math.cos(math.radians(lat))
+        y = (la - lat)
+        return x * x + y * y
+
+    rows.sort(key=_dist2)
+    out: list[str] = []
+    for r in rows:
+        sid = str(r["id"]).strip()
+        if sid:
+            out.append(sid)
+        if len(out) >= limit:
+            break
+    return out
+
+
+async def _meteostat_fetch_latest_hour(station_id: str) -> dict[str, float | int | None] | None:
+    years = [int(_dt.date.today().year), int(_dt.date.today().year) - 1]
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        for year in years:
+            url = f"{METEOSTAT_BULK_BASE}/hourly/{year}/{station_id}.csv.gz"
+            try:
+                r = await client.get(url)
+                if r.status_code == 404:
+                    continue
+                r.raise_for_status()
+            except httpx.HTTPError:
+                continue
+
+            try:
+                gz = gzip.GzipFile(fileobj=io.BytesIO(r.content))
+                text = io.TextIOWrapper(gz, encoding="utf-8", newline="")
+                reader = csv.DictReader(text)
+                last: dict[str, str] | None = None
+                for row in reader:
+                    if row:
+                        last = row
+                if not last:
+                    continue
+            except (OSError, UnicodeError, csv.Error):
+                continue
+
+            def _f(key: str) -> float | None:
+                v = last.get(key)
+                if v is None:
+                    return None
+                s = str(v).strip()
+                if not s:
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+
+            def _i(key: str) -> int | None:
+                v = last.get(key)
+                if v is None:
+                    return None
+                s = str(v).strip()
+                if not s:
+                    return None
+                try:
+                    return int(float(s))
+                except ValueError:
+                    return None
+
+            return {
+                "temp": _f("temp"),
+                "rhum": _f("rhum"),
+                "prcp": _f("prcp"),
+                "wspd": _f("wspd"),
+                "pres": _f("pres"),
+                "coco": _i("coco"),
+            }
+    return None
+
+
+async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str]:
+    # Use Open-Meteo geocoding to get coordinates (no API key).
+    lang = "ru" if cfg.locale == "ru" else "en"
+    lang_geo = "ru" if lang == "ru" else "en"
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            gr = await client.get(
+                OPEN_METEO_GEOCODE,
+                params={"name": city, "count": 1, "language": lang_geo, "format": "json"},
+            )
+            gr.raise_for_status()
+            data = gr.json()
+            results = data.get("results") or []
+            if not results:
+                return False, i18n.t("errors.city_not_found")
+            g0 = results[0]
+            lat, lon = float(g0["latitude"]), float(g0["longitude"])
+            name = str(g0.get("name") or city)
+    except httpx.HTTPStatusError as e:
+        logger.warning("Meteostat geocode HTTP error: %s", e)
+        return False, i18n.t("errors.weather_failed", detail=e.response.status_code)
+    except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
+        logger.warning("Meteostat geocode failed: %s", e)
+        return False, i18n.t("errors.weather_failed", detail=str(e)[:80])
+
+    async with _meteostat_lock:
+        try:
+            db_path = await _meteostat_ensure_stations_db()
+        except (httpx.HTTPError, OSError) as e:
+            logger.warning("Meteostat stations.db download failed: %s", e)
+            return False, i18n.t("errors.weather_failed", detail="stations db download failed")
+
+    try:
+        station_ids = _meteostat_station_candidates(db_path, lat, lon, limit=12)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Meteostat stations.db query failed: %s", e)
+        return False, i18n.t("errors.weather_failed", detail="stations db query failed")
+
+    if not station_ids:
+        return False, i18n.t("errors.weather_failed", detail="no stations nearby")
+
+    for sid in station_ids:
+        rec = await _meteostat_fetch_latest_hour(sid)
+        if not rec:
+            continue
+        temp = rec.get("temp")
+        if temp is None:
+            continue
+        hum = rec.get("rhum") or 0.0
+        prcp = rec.get("prcp") or 0.0
+        wspd = rec.get("wspd") or 0.0
+        pres = rec.get("pres")
+        coco = rec.get("coco")
+
+        wind_ms = _meteostat_kmh_to_ms(float(wspd))
+        pressure_hpa = float(pres) if pres is not None else None
+        wmo_like = _meteostat_coco_to_wmo_bucket(int(coco) if coco is not None else None)
+
+        tf = float(temp)
+        t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
+        return True, _format_weather_line(
+            name,
+            t_str,
+            wmo_like,
+            float(hum),
+            float(wind_ms),
+            float(prcp),
+            pressure_hpa,
+            cfg.locale,
+        )
+
+    return False, i18n.t("errors.weather_failed", detail="no recent station data")
 
 
 async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str]:

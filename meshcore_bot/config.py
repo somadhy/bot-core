@@ -22,6 +22,7 @@ class BotConfig:
     poll_keepalive_sec: float
     poll_keepalive_only_when_idle_sec: float
     weather_provider: str
+    weather_provider_fallback: str
     weather_default_city: str
     weather_cache_ttl_minutes: float
     blacklist_path: Path
@@ -157,6 +158,9 @@ class BotConfig:
             poll_keepalive_sec=poll_keepalive_sec,
             poll_keepalive_only_when_idle_sec=poll_keepalive_only_when_idle_sec,
             weather_provider=str(weather.get("provider", "openmeteo")),
+            weather_provider_fallback=str(
+                weather.get("fallback_provider") or weather.get("fallback") or ""
+            ).strip(),
             weather_default_city=str(
                 weather.get("default_city") or weather.get("city") or ""
             ).strip(),

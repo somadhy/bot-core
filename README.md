@@ -8,7 +8,10 @@ Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: ко
 
 - **Docker + Docker Compose** (Linux-хост с доступом к USB serial)
 - Узел с прошивкой Companion
-- По умолчанию погода через **Open-Meteo** (ключ не нужен). Для **OpenWeatherMap** задайте **`WEATHER_API_KEY`** в `.env` и в `config.yaml`: **`weather.provider: openweathermap`**
+- По умолчанию погода через **Open-Meteo** (ключ не нужен).
+- Для **OpenWeatherMap** задайте **`WEATHER_API_KEY`** в `.env` и в `config.yaml`: **`weather.provider: openweathermap`**
+- В `config.example.yaml` по умолчанию настроен **fallback** на **Meteostat** (`weather.fallback_provider: meteostat`) на случай ошибок у основного провайдера.
+- Можно настроить **fallback-провайдера**: `weather.fallback_provider` (будет использован, если основной провайдер вернул ошибку).
 
 ## Docker: запуск бота
 
@@ -93,7 +96,13 @@ python -m meshcore_bot --diagnose
 - **`advert.interval_hours`**: периодический адверт узла через meshcore (`send_advert`); `0` — выключено; **`advert.flood`**: широкий адверт (зависит от прошивки)
 - **`poll.keepalive_sec`**: keepalive для USB/companion при простое (по умолчанию 60; `0` — выключить). Можно переопределить `MESHCORE_BOT_KEEPALIVE_SEC`
 - **`poll.keepalive_only_when_idle_sec`**: keepalive шлётся только если не было входящих сообщений ≥ N секунд (по умолчанию 30). Можно переопределить `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC`
-- **`weather.provider`**: `openmeteo` (по умолчанию) или `openweathermap` (нужен `WEATHER_API_KEY`)
+- **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`) или `meteostat` (без ключа)
+- **`weather.fallback_provider`**: запасной провайдер погоды. Если основной провайдер вернул ошибку, бот попробует fallback (если задан). Любой поддерживаемый провайдер можно поставить основным и любым — запасным.
+
+Примечание про **Meteostat**:
+
+- Провайдер `meteostat` в этом боте использует **Bulk Data** (`data.meteostat.net`), который **не требует API-ключа** (но данные могут запаздывать до ~24 часов).
+- Официальный **Meteostat JSON API** (`meteostat.p.rapidapi.com`) действительно требует ключ RapidAPI и в боте не используется.
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex) для удалённой остановки
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет
