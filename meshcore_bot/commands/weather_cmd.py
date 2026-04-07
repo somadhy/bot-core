@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import sqlite3
+import tempfile
 import time
 from typing import TYPE_CHECKING
 
@@ -268,7 +269,7 @@ async def _meteostat_ensure_stations_db() -> str:
     if _meteostat_db_local_path is not None:
         return _meteostat_db_local_path
 
-    path = "/tmp/meshcore_bot_meteostat_stations.db"
+    path = os.path.join(tempfile.gettempdir(), "meshcore_bot_meteostat_stations.db")
     try:
         st = os.stat(path)
         # Refresh roughly monthly
@@ -283,10 +284,20 @@ async def _meteostat_ensure_stations_db() -> str:
     async with httpx.AsyncClient(timeout=30.0) as client:
         r = await client.get(METEOSTAT_STATIONS_DB_URL)
         r.raise_for_status()
-        tmp = f"{path}.tmp"
-        with open(tmp, "wb") as f:
-            f.write(r.content)
-        os.replace(tmp, path)
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix="meshcore_bot_meteostat_", suffix=".db", dir=d)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(r.content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
 
     _meteostat_db_local_path = path
     return path
@@ -414,23 +425,23 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
             lat, lon = float(g0["latitude"]), float(g0["longitude"])
             name = str(g0.get("name") or city)
     except httpx.HTTPStatusError as e:
-        logger.warning("Meteostat geocode HTTP error: %s", e)
+        logger.warning("Meteostat geocode HTTP error: %r", e)
         return False, i18n.t("errors.weather_failed", detail=e.response.status_code)
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
-        logger.warning("Meteostat geocode failed: %s", e)
+        logger.warning("Meteostat geocode failed: %r", e)
         return False, i18n.t("errors.weather_failed", detail=str(e)[:80])
 
     async with _meteostat_lock:
         try:
             db_path = await _meteostat_ensure_stations_db()
         except (httpx.HTTPError, OSError) as e:
-            logger.warning("Meteostat stations.db download failed: %s", e)
+            logger.warning("Meteostat stations.db download failed: %r", e)
             return False, i18n.t("errors.weather_failed", detail="stations db download failed")
 
     try:
         station_ids = _meteostat_station_candidates(db_path, lat, lon, limit=12)
     except Exception as e:  # noqa: BLE001
-        logger.warning("Meteostat stations.db query failed: %s", e)
+        logger.warning("Meteostat stations.db query failed: %r", e)
         return False, i18n.t("errors.weather_failed", detail="stations db query failed")
 
     if not station_ids:
@@ -519,10 +530,10 @@ async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool
             p_msl = cur.get("pressure_msl")
             pressure_hpa = float(p_msl) if p_msl is not None else None
     except httpx.HTTPStatusError as e:
-        logger.warning("Open-Meteo HTTP error: %s", e)
+        logger.warning("Open-Meteo HTTP error: %r", e)
         return False, i18n.t("errors.weather_failed", detail=e.response.status_code)
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
-        logger.warning("Open-Meteo request failed: %s", e)
+        logger.warning("Open-Meteo request failed: %r", e)
         return False, i18n.t("errors.weather_failed", detail=str(e)[:80])
 
     tf = float(temp)
