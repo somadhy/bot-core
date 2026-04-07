@@ -41,7 +41,7 @@ weather:
   # openmeteo — без API-ключа, обычно доступен из РФ (api.open-meteo.com)
   # openweathermap — нужен WEATHER_API_KEY
   # meteostat — без API-ключа (используется Bulk Data: data.meteostat.net; обновление может запаздывать до ~24ч).
-  # Внимание: Meteostat JSON API (meteostat.p.rapidapi.com) требует ключ RapidAPI — в этом боте он не используется.
+  # meteostat_rapidapi — Meteostat JSON API через RapidAPI (нужен RAPIDAPI_KEY).
   provider: openmeteo
   # Запасной провайдер: используется, если основной вернул ошибку.
   # Можно указать любой поддерживаемый провайдер. Пусто/отсутствует — без fallback.

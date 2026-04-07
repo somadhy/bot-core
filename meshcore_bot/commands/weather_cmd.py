@@ -57,6 +57,8 @@ OPEN_METEO_FORECAST = "https://api.open-meteo.com/v1/forecast"
 
 METEOSTAT_STATIONS_DB_URL = "https://data.meteostat.net/stations.db"
 METEOSTAT_BULK_BASE = "https://data.meteostat.net"
+METEOSTAT_RAPIDAPI_BASE = "https://meteostat.p.rapidapi.com"
+METEOSTAT_RAPIDAPI_HOST = "meteostat.p.rapidapi.com"
 
 # WMO code → one condition emoji (locale-independent)
 _WMO_EMOJI: dict[int, str] = {
@@ -164,6 +166,8 @@ async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
             return "openweathermap"
         if p in ("meteostat", "meteostat.net"):
             return "meteostat"
+        if p in ("meteostat_rapidapi", "meteostat-rapidapi", "meteostat_rapid", "meteostat-rapid"):
+            return "meteostat_rapidapi"
         return p
 
     primary_raw = cfg.weather_provider or "openmeteo"
@@ -202,6 +206,8 @@ async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
             ok, line = await _fetch_open_weather_map(city, cfg, i18n)
         elif provider_norm == "meteostat":
             ok, line = await _fetch_meteostat(city, cfg, i18n)
+        elif provider_norm == "meteostat_rapidapi":
+            ok, line = await _fetch_meteostat_rapidapi(city, cfg, i18n)
         else:
             ok, line = False, i18n.t("errors.weather_failed", detail="unsupported provider")
 
@@ -261,6 +267,18 @@ def _meteostat_coco_to_wmo_bucket(coco: int | None) -> int:
 
 def _meteostat_kmh_to_ms(kmh: float) -> float:
     return float(kmh) / 3.6
+
+
+def _rapidapi_headers(host: str) -> dict[str, str] | None:
+    """
+    Common RapidAPI auth headers.
+
+    We use a shared RAPIDAPI_KEY to allow adding more RapidAPI providers later.
+    """
+    key = (os.environ.get("RAPIDAPI_KEY") or "").strip()
+    if not key:
+        return None
+    return {"x-rapidapi-key": key, "x-rapidapi-host": host}
 
 
 async def _meteostat_ensure_stations_db() -> str:
@@ -478,6 +496,109 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
         )
 
     return False, i18n.t("errors.weather_failed", detail="no recent station data")
+
+
+async def _fetch_meteostat_rapidapi(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str]:
+    """
+    Meteostat JSON API via RapidAPI (requires RAPIDAPI_KEY).
+    Docs: https://dev.meteostat.net/api
+    """
+    headers = _rapidapi_headers(METEOSTAT_RAPIDAPI_HOST)
+    if headers is None:
+        return False, i18n.t("errors.weather_not_configured")
+
+    lang = "ru" if cfg.locale == "ru" else "en"
+    lang_geo = "ru" if lang == "ru" else "en"
+
+    # Geocode via Open-Meteo (no key) to get lat/lon for stations/nearby
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            gr = await client.get(
+                OPEN_METEO_GEOCODE,
+                params={"name": city, "count": 1, "language": lang_geo, "format": "json"},
+            )
+            gr.raise_for_status()
+            data = gr.json()
+            results = data.get("results") or []
+            if not results:
+                return False, i18n.t("errors.city_not_found")
+            g0 = results[0]
+            lat, lon = float(g0["latitude"]), float(g0["longitude"])
+            name = str(g0.get("name") or city)
+    except httpx.HTTPStatusError as e:
+        logger.warning("Meteostat(RapidAPI) geocode HTTP error: %r", e)
+        return False, i18n.t("errors.weather_failed", detail=e.response.status_code)
+    except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
+        logger.warning("Meteostat(RapidAPI) geocode failed: %r", e)
+        return False, i18n.t("errors.weather_failed", detail=str(e)[:80])
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0, headers=headers) as client:
+            nr = await client.get(
+                f"{METEOSTAT_RAPIDAPI_BASE}/stations/nearby",
+                params={"lat": lat, "lon": lon, "limit": 1},
+            )
+            nr.raise_for_status()
+            nj = nr.json()
+            stations = nj.get("data") or []
+            if not stations:
+                return False, i18n.t("errors.weather_failed", detail="no stations nearby")
+            station_id = str((stations[0] or {}).get("id") or "").strip()
+            if not station_id:
+                return False, i18n.t("errors.weather_failed", detail="bad station id")
+
+            end = _dt.date.today()
+            start = end - _dt.timedelta(days=2)
+            hr = await client.get(
+                f"{METEOSTAT_RAPIDAPI_BASE}/stations/hourly",
+                params={
+                    "station": station_id,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "units": "metric",
+                    "model": "true",
+                },
+            )
+            hr.raise_for_status()
+            hj = hr.json()
+            rows = hj.get("data") or []
+            if not rows:
+                return False, i18n.t("errors.weather_failed", detail="no hourly data")
+
+            last = rows[-1] or {}
+            temp = last.get("temp")
+            if temp is None:
+                return False, i18n.t("errors.weather_failed", detail="no temp")
+
+            hum = last.get("rhum") or 0.0
+            prcp = last.get("prcp") or 0.0
+            wspd = last.get("wspd") or 0.0  # km/h in metric
+            pres = last.get("pres")
+            coco = last.get("coco")
+
+    except httpx.HTTPStatusError as e:
+        logger.warning("Meteostat(RapidAPI) HTTP error: %r", e)
+        return False, i18n.t("errors.weather_failed", detail=e.response.status_code)
+    except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
+        logger.warning("Meteostat(RapidAPI) request failed: %r", e)
+        return False, i18n.t("errors.weather_failed", detail=str(e)[:80])
+
+    wind_ms = _meteostat_kmh_to_ms(float(wspd))
+    pressure_hpa = float(pres) if pres is not None else None
+    wmo_like = _meteostat_coco_to_wmo_bucket(int(coco) if coco is not None else None)
+
+    tf = float(temp)
+    t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
+    return True, _format_weather_line(
+        name,
+        t_str,
+        wmo_like,
+        float(hum),
+        float(wind_ms),
+        float(prcp),
+        pressure_hpa,
+        cfg.locale,
+    )
 
 
 async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str]:

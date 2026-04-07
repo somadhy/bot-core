@@ -96,13 +96,13 @@ python -m meshcore_bot --diagnose
 - **`advert.interval_hours`**: периодический адверт узла через meshcore (`send_advert`); `0` — выключено; **`advert.flood`**: широкий адверт (зависит от прошивки)
 - **`poll.keepalive_sec`**: keepalive для USB/companion при простое (по умолчанию 60; `0` — выключить). Можно переопределить `MESHCORE_BOT_KEEPALIVE_SEC`
 - **`poll.keepalive_only_when_idle_sec`**: keepalive шлётся только если не было входящих сообщений ≥ N секунд (по умолчанию 30). Можно переопределить `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC`
-- **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`) или `meteostat` (без ключа)
+- **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`), `meteostat` (Bulk Data, без ключа) или `meteostat_rapidapi` (RapidAPI, нужен `RAPIDAPI_KEY`)
 - **`weather.fallback_provider`**: запасной провайдер погоды. Если основной провайдер вернул ошибку, бот попробует fallback (если задан). Любой поддерживаемый провайдер можно поставить основным и любым — запасным.
 
 Примечание про **Meteostat**:
 
 - Провайдер `meteostat` в этом боте использует **Bulk Data** (`data.meteostat.net`), который **не требует API-ключа** (но данные могут запаздывать до ~24 часов).
-- Официальный **Meteostat JSON API** (`meteostat.p.rapidapi.com`) действительно требует ключ RapidAPI и в боте не используется.
+- Провайдер `meteostat_rapidapi` использует **Meteostat JSON API** (`meteostat.p.rapidapi.com`) и требует **`RAPIDAPI_KEY`**.
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex) для удалённой остановки
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет
