@@ -2,6 +2,8 @@
   "errors": {
     "no_default_city": "No city given and default_city is not set.",
     "weather_not_configured": "Weather: WEATHER_API_KEY is not set.",
+    "rapidapi_not_configured": "Weather: RAPIDAPI_KEY is not set.",
+    "city_not_found_all": "Location not found by any provider.",
     "weather_failed": "Weather: error ({detail})",
     "city_not_found": "City not found.",
     "internal": "Bot error."

@@ -10,6 +10,7 @@ Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: ко
 - Узел с прошивкой Companion
 - По умолчанию погода через **Open-Meteo** (ключ не нужен).
 - Для **OpenWeatherMap** задайте **`WEATHER_API_KEY`** в `.env` и в `config.yaml`: **`weather.provider: openweathermap`**
+- Для **Meteostat через RapidAPI** задайте **`RAPIDAPI_KEY`** в `.env` и в `config.yaml`: **`weather.provider: meteostat_rapidapi`** (или `weather.fallback_provider: meteostat_rapidapi`)
 - В `config.example.yaml` по умолчанию настроен **fallback** на **Meteostat** (`weather.fallback_provider: meteostat`) на случай ошибок у основного провайдера.
 - Можно настроить **fallback-провайдера**: `weather.fallback_provider` (будет использован, если основной провайдер вернул ошибку).
 
@@ -21,6 +22,8 @@ cp config.example.yaml config.yaml
 # В config.yaml: serial.device = /dev/ttyUSB0 (как в контейнере), channels, locale, admins
 # Опционально, только для OpenWeatherMap:
 # echo 'WEATHER_API_KEY=your_key' >> .env
+# Опционально, только для meteostat_rapidapi:
+# echo 'RAPIDAPI_KEY=your_key' >> .env
 docker compose up --build
 ```
 

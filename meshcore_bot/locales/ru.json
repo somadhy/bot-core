@@ -2,6 +2,8 @@
   "errors": {
     "no_default_city": "Город не указан и default_city не задан.",
     "weather_not_configured": "Погода: нет WEATHER_API_KEY.",
+    "rapidapi_not_configured": "Погода: нет RAPIDAPI_KEY.",
+    "city_not_found_all": "Геопозиция не найдена ни одним провайдером.",
     "weather_failed": "Погода: ошибка ({detail})",
     "city_not_found": "Город не найден.",
     "internal": "Ошибка бота."

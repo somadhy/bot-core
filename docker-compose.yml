@@ -25,6 +25,7 @@ services:
       - ./data:/app/data
     environment:
       WEATHER_API_KEY: ${WEATHER_API_KEY:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
       MESHCORE_BOT_TRACE_POLL: ${MESHCORE_BOT_TRACE_POLL:-}
       MESHCORE_BOT_DEBUG: ${MESHCORE_BOT_DEBUG:-}
       MESHCORE_BOT_MESH_DEBUG: ${MESHCORE_BOT_MESH_DEBUG:-}
@@ -42,4 +43,5 @@ services:
       - ./config.yaml:/app/config.yaml:ro
     environment:
       WEATHER_API_KEY: ${WEATHER_API_KEY:-}
+      RAPIDAPI_KEY: ${RAPIDAPI_KEY:-}
     command: ["python", "-m", "meshcore_bot", "--diagnose"]
