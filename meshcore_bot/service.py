@@ -159,8 +159,8 @@ class BotService:
                     return False
                 if r.type == EventType.OK:
                     logger.info(
-                        "channel send: companion OK (legacy, no MSG_SENT/ACK tracking) "
-                        "kind=%s channel_idx=%s len=%s",
+                        "channel send: companion PACKET_OK (no MSG_SENT — expected_ack/ACK wait "
+                        "unavailable) kind=%s channel_idx=%s len=%s",
                         kind or "reply",
                         channel_idx,
                         len(msg),
