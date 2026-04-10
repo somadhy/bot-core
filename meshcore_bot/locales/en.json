@@ -12,6 +12,13 @@
     "body": "Commands: weather [city] | погода [город] | help | помощь"
   },
   "admin": {
-    "shutdown_ok": "Shutting down."
+    "shutdown_ok": "Shutting down.",
+    "channels_none": "No channels (channels.enabled_indices is empty).",
+    "msg_bad_format": "Format: msg index:text (index must be in channels.enabled_indices).",
+    "msg_bad_index": "Invalid channel index (expected an integer).",
+    "msg_empty": "Empty message after ':'.",
+    "msg_channel_not_enabled": "Channel {idx} is not in channels.enabled_indices.",
+    "msg_ok": "Sent to channel {idx}.",
+    "msg_send_failed": "Send failed (send_chan_msg error)."
   }
 }

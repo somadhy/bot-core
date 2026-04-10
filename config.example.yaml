@@ -65,10 +65,16 @@ commands:
   #   weather / погода
   #   help / помощь
   #   stop / стоп
+  #   channels / каналы  (только ЛС админа — список channels.enabled_indices)
+  #   msg / мсг  (только ЛС админа — «msg индекс:текст» в канал от лица бота)
   # Здесь можно добавить короткие синонимы, например `wz` для погоды.
   weather:
     aliases: []
   help:
     aliases: []
   stop:
+    aliases: []
+  channels:
+    aliases: []
+  msg:
     aliases: []

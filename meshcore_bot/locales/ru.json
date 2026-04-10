@@ -12,6 +12,13 @@
     "body": "Команды: погода [город] | weather [city] | помощь | help"
   },
   "admin": {
-    "shutdown_ok": "Останавливаюсь."
+    "shutdown_ok": "Останавливаюсь.",
+    "channels_none": "Нет каналов (channels.enabled_indices пуст).",
+    "msg_bad_format": "Формат: мсг индекс:текст (канал из channels.enabled_indices).",
+    "msg_bad_index": "Некорректный индекс канала (нужно целое число).",
+    "msg_empty": "Пустое сообщение после «:».",
+    "msg_channel_not_enabled": "Канал {idx} не в channels.enabled_indices.",
+    "msg_ok": "Отправлено в канал {idx}.",
+    "msg_send_failed": "Не удалось отправить (ошибка send_chan_msg)."
   }
 }

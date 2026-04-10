@@ -11,9 +11,10 @@ from meshcore.events import Event
 
 from meshcore_bot.auth import is_admin
 from meshcore_bot.blacklist import Blacklist
+from meshcore_bot.channel_info import fetch_channel_table
 from meshcore_bot.commands.router import CmdKind, parse_incoming
 from meshcore_bot.commands.weather_cmd import fetch_weather_line
-from meshcore_bot.textutil import clip_utf8_bytes
+from meshcore_bot.textutil import clip_utf8_bytes, pack_lines_utf8_chunks
 
 if TYPE_CHECKING:
     from meshcore_bot.config import BotConfig
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LEN = 220
 # Полный UTF-8 ответ погоды с @[nick].
 WEATHER_REPLY_MAX_BYTES = 140
+# Список каналов в ЛС админа: каждое сообщение целиком (с @[nick]) ≤ этого размера UTF-8.
+CHANNELS_REPLY_MAX_BYTES = 150
+# Минимальная пауза между частями длинного списка (если reply_delay_sec = 0).
+_CHANNELS_PART_MIN_GAP_SEC = 0.35
 
 
 def _channel_idx_from_event(event: Event) -> int:
@@ -73,6 +78,11 @@ def _reply_mention(nick: str, body: str) -> str:
     return f"@[{n}] {body}"
 
 
+def _dm_mention_body_budget(nick: str, total_max: int) -> int:
+    overhead = len(_reply_mention(nick, "").encode("utf-8"))
+    return max(0, total_max - overhead)
+
+
 def _weather_reply(nick: str, body: str) -> str:
     return clip_utf8_bytes(_reply_mention(nick, body), WEATHER_REPLY_MAX_BYTES)
 
@@ -99,7 +109,7 @@ class BotService:
 
     async def _send_chan(
         self, channel_idx: int, text: str, *, kind: str | None = None
-    ) -> None:
+    ) -> bool:
         d = self._cfg.reply_delay_sec
         if d > 0:
             await asyncio.sleep(d)
@@ -108,21 +118,30 @@ class BotService:
             r = await self._mesh.commands.send_chan_msg(channel_idx, msg)
             if r.type == EventType.ERROR:
                 logger.warning("send_chan_msg error: %s", r.payload)
-            else:
-                logger.info(
-                    "reply sent kind=%s channel_idx=%s len=%s",
-                    kind or "reply",
-                    channel_idx,
-                    len(msg),
-                )
+                return False
+            logger.info(
+                "reply sent kind=%s channel_idx=%s len=%s",
+                kind or "reply",
+                channel_idx,
+                len(msg),
+            )
+            return True
         except Exception:
             logger.exception("send_chan_msg failed")
+            return False
 
-    async def _send_dm(self, dst: Any, text: str, *, kind: str | None = None) -> None:
+    async def _send_dm(
+        self,
+        dst: Any,
+        text: str,
+        *,
+        kind: str | None = None,
+        delay_sec: float | None = None,
+    ) -> None:
         if dst is None:
             logger.warning("No destination for DM reply")
             return
-        d = self._cfg.reply_delay_sec
+        d = self._cfg.reply_delay_sec if delay_sec is None else delay_sec
         if d > 0:
             await asyncio.sleep(d)
         msg = _clip(text)
@@ -237,6 +256,83 @@ class BotService:
                 dst, _reply_mention(nick, self._i18n.t("admin.shutdown_ok")), kind="stop"
             )
             self._shutdown.set()
+            return
+
+        if parsed.kind == CmdKind.MSG:
+            if not is_admin(public_key, self._cfg.admin_public_keys):
+                return
+            raw_arg = (parsed.arg or "").strip()
+            if ":" not in raw_arg:
+                await self._send_dm(
+                    dst,
+                    _reply_mention(nick, self._i18n.t("admin.msg_bad_format")),
+                    kind="admin_msg",
+                )
+                return
+            idx_s, body = raw_arg.split(":", 1)
+            try:
+                chan_idx = int(idx_s.strip())
+            except (TypeError, ValueError):
+                await self._send_dm(
+                    dst,
+                    _reply_mention(nick, self._i18n.t("admin.msg_bad_index")),
+                    kind="admin_msg",
+                )
+                return
+            body = body.strip()
+            if not body:
+                await self._send_dm(
+                    dst,
+                    _reply_mention(nick, self._i18n.t("admin.msg_empty")),
+                    kind="admin_msg",
+                )
+                return
+            if chan_idx not in self._cfg.channels_enabled:
+                await self._send_dm(
+                    dst,
+                    _reply_mention(
+                        nick, self._i18n.t("admin.msg_channel_not_enabled", idx=chan_idx)
+                    ),
+                    kind="admin_msg",
+                )
+                return
+            ok = await self._send_chan(chan_idx, body, kind="admin_msg")
+            if ok:
+                await self._send_dm(
+                    dst,
+                    _reply_mention(nick, self._i18n.t("admin.msg_ok", idx=chan_idx)),
+                    kind="admin_msg",
+                )
+            else:
+                await self._send_dm(
+                    dst,
+                    _reply_mention(nick, self._i18n.t("admin.msg_send_failed")),
+                    kind="admin_msg",
+                )
+            return
+
+        if parsed.kind == CmdKind.CHANNELS:
+            if not is_admin(public_key, self._cfg.admin_public_keys):
+                return
+            enabled = sorted(set(self._cfg.channels_enabled))
+            if not enabled:
+                await self._send_dm(
+                    dst, _reply_mention(nick, self._i18n.t("admin.channels_none")), kind="channels"
+                )
+                return
+            table = await fetch_channel_table(self._mesh, self._cfg.channels_enabled)
+            lines = [f"{idx}: {table.get(idx, '(?)')}" for idx in enabled]
+            body_budget = max(
+                1, _dm_mention_body_budget(nick, CHANNELS_REPLY_MAX_BYTES)
+            )
+            parts = pack_lines_utf8_chunks(lines, body_budget)
+            between = max(self._cfg.reply_delay_sec, _CHANNELS_PART_MIN_GAP_SEC)
+            for i, body in enumerate(parts):
+                delay_sec = between if i > 0 else None
+                full = _reply_mention(nick, body)
+                if len(full.encode("utf-8")) > CHANNELS_REPLY_MAX_BYTES:
+                    full = clip_utf8_bytes(full, CHANNELS_REPLY_MAX_BYTES)
+                await self._send_dm(dst, full, kind="channels", delay_sec=delay_sec)
             return
 
         if parsed.kind == CmdKind.HELP:
