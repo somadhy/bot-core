@@ -24,11 +24,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LEN = 220
-# Полный UTF-8 ответ погоды с @[nick].
+# Full UTF-8 weather reply with @[nick].
 WEATHER_REPLY_MAX_BYTES = 140
-# Список каналов в ЛС админа: каждое сообщение целиком (с @[nick]) ≤ этого размера UTF-8.
+# Admin DM channel list: each message with @[nick] fits in this UTF-8 byte budget.
 CHANNELS_REPLY_MAX_BYTES = 150
-# Минимальная пауза между частями длинного списка (если reply_delay_sec = 0).
+# Minimum gap between chunks of a long list when reply_delay_sec is 0.
 _CHANNELS_PART_MIN_GAP_SEC = 0.35
 
 
@@ -80,10 +80,17 @@ def _suggested_timeout_ms(payload: dict[str, Any]) -> int | None:
 
 
 def _ack_log_bits(event: Event) -> str:
-    """Поля ACK-события для логов (meshcore кладёт code в payload и attributes)."""
+    """Short ACK event dump for logs (meshcore puts `code` in payload and attributes)."""
     pl = event.payload if isinstance(event.payload, dict) else {}
     attrs = event.attributes if isinstance(event.attributes, dict) else {}
     return f"payload={pl} attrs={attrs}"
+
+
+def _mesh_cmd_timeout(mesh: MeshCore) -> float:
+    t = getattr(mesh.commands, "default_timeout", None)
+    if isinstance(t, (int, float)) and t > 0:
+        return float(t)
+    return 5.0
 
 
 def _channel_sender_label(raw_text: str) -> str:
@@ -139,6 +146,30 @@ class BotService:
         if self._cfg.dm_enabled:
             self._mesh.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_msg)
 
+    async def _send_chan_companion_response(self, data: bytes) -> Event:
+        """
+        Wait for channel TX result. Firmware may send PACKET_OK before MSG_SENT; meshcore
+        `send([MSG_SENT, OK, ...])` would return OK only — we then wait for MSG_SENT.
+        """
+        timeout = _mesh_cmd_timeout(self._mesh)
+        r = await self._mesh.commands.send(
+            data,
+            [EventType.MSG_SENT, EventType.OK, EventType.ERROR],
+        )
+        if r.type in (EventType.ERROR, EventType.MSG_SENT):
+            return r
+        logger.info(
+            "channel send: PACKET_OK first, waiting for MSG_SENT (firmware often sends OK then MSG_SENT)"
+        )
+        r2 = await self._mesh.wait_for_event(EventType.MSG_SENT, timeout=timeout)
+        if r2 is not None:
+            return r2
+        logger.warning(
+            "channel send: PACKET_OK but no MSG_SENT within %.1fs — OK-only path, no expected_ack",
+            timeout,
+        )
+        return r
+
     async def _send_chan(
         self, channel_idx: int, text: str, *, kind: str | None = None
     ) -> bool:
@@ -150,20 +181,13 @@ class BotService:
         try:
             for attempt in range(cfg.flood_ack_max_attempts):
                 data = _chan_cmd_bytes(channel_idx, msg)
-                # Только MSG_SENT (+ ERROR): не ждать PACKET_OK. Часть прошивок шлёт сначала OK,
-                # потом MSG_SENT с expected_ack; meshcore send() берёт FIRST_COMPLETED — OK «съедал»
-                # ответ и срывал ACK/heard, хотя в приложениях всё отображалось нормально.
-                r = await self._mesh.commands.send(
-                    data,
-                    [EventType.MSG_SENT, EventType.ERROR],
-                )
+                r = await self._send_chan_companion_response(data)
                 if r.type == EventType.ERROR:
                     reason = (r.payload or {}).get("reason") if isinstance(r.payload, dict) else None
                     if reason in ("timeout", "no_event_received"):
                         logger.warning(
-                            "channel send: no MSG_SENT (companion timeout) kind=%s channel_idx=%s "
-                            "payload=%s — ожидается MSG_SENT с expected_ack; только PACKET_OK без "
-                            "MSG_SENT не поддерживается.",
+                            "channel send: companion timeout waiting for response kind=%s channel_idx=%s "
+                            "payload=%s",
                             kind or "reply",
                             channel_idx,
                             r.payload,
@@ -171,6 +195,15 @@ class BotService:
                     else:
                         logger.warning("channel send error: %s", r.payload)
                     return False
+                if r.type == EventType.OK:
+                    logger.info(
+                        "channel send: OK-only response (no MSG_SENT), cannot use expected_ack/ACK "
+                        "kind=%s channel_idx=%s len=%s",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
                 pl = r.payload if isinstance(r.payload, dict) else {}
                 route = int(pl.get("type", 0))
                 route_label = "flood" if route == 1 else "direct"
