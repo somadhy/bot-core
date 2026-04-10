@@ -150,22 +150,27 @@ class BotService:
         try:
             for attempt in range(cfg.flood_ack_max_attempts):
                 data = _chan_cmd_bytes(channel_idx, msg)
+                # Только MSG_SENT (+ ERROR): не ждать PACKET_OK. Часть прошивок шлёт сначала OK,
+                # потом MSG_SENT с expected_ack; meshcore send() берёт FIRST_COMPLETED — OK «съедал»
+                # ответ и срывал ACK/heard, хотя в приложениях всё отображалось нормально.
                 r = await self._mesh.commands.send(
                     data,
-                    [EventType.MSG_SENT, EventType.OK, EventType.ERROR],
+                    [EventType.MSG_SENT, EventType.ERROR],
                 )
                 if r.type == EventType.ERROR:
-                    logger.warning("channel send error: %s", r.payload)
+                    reason = (r.payload or {}).get("reason") if isinstance(r.payload, dict) else None
+                    if reason in ("timeout", "no_event_received"):
+                        logger.warning(
+                            "channel send: no MSG_SENT (companion timeout) kind=%s channel_idx=%s "
+                            "payload=%s — ожидается MSG_SENT с expected_ack; только PACKET_OK без "
+                            "MSG_SENT не поддерживается.",
+                            kind or "reply",
+                            channel_idx,
+                            r.payload,
+                        )
+                    else:
+                        logger.warning("channel send error: %s", r.payload)
                     return False
-                if r.type == EventType.OK:
-                    logger.info(
-                        "channel send: companion PACKET_OK (no MSG_SENT — expected_ack/ACK wait "
-                        "unavailable) kind=%s channel_idx=%s len=%s",
-                        kind or "reply",
-                        channel_idx,
-                        len(msg),
-                    )
-                    return True
                 pl = r.payload if isinstance(r.payload, dict) else {}
                 route = int(pl.get("type", 0))
                 route_label = "flood" if route == 1 else "direct"
