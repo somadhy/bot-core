@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 from meshcore import EventType, MeshCore
@@ -52,6 +53,20 @@ def _clip(text: str, max_len: int = MAX_MESSAGE_LEN) -> str:
     if len(t) <= max_len:
         return t
     return t[: max_len - 2] + ".."
+
+
+def _chan_cmd_bytes(channel_idx: int, msg: str, *, timestamp: int | None = None) -> bytes:
+    """Companion CMD_SEND_CHANNEL_MESSAGE (same wire format as meshcore `send_chan_msg`)."""
+    ts = int(time.time()) if timestamp is None else int(timestamp)
+    ts_bytes = ts.to_bytes(4, "little")
+    return b"\x03\x00" + channel_idx.to_bytes(1, "little") + ts_bytes + msg.encode("utf-8")
+
+
+def _expected_ack_hex(payload: dict[str, Any]) -> str:
+    exp = payload.get("expected_ack")
+    if isinstance(exp, (bytes, bytearray)):
+        return exp.hex()
+    return ""
 
 
 def _channel_sender_label(raw_text: str) -> str:
@@ -114,20 +129,88 @@ class BotService:
         if d > 0:
             await asyncio.sleep(d)
         msg = _clip(text)
+        cfg = self._cfg
         try:
-            r = await self._mesh.commands.send_chan_msg(channel_idx, msg)
-            if r.type == EventType.ERROR:
-                logger.warning("send_chan_msg error: %s", r.payload)
-                return False
-            logger.info(
-                "reply sent kind=%s channel_idx=%s len=%s",
-                kind or "reply",
-                channel_idx,
-                len(msg),
-            )
-            return True
+            for attempt in range(cfg.flood_ack_max_attempts):
+                data = _chan_cmd_bytes(channel_idx, msg)
+                r = await self._mesh.commands.send(
+                    data,
+                    [EventType.MSG_SENT, EventType.OK, EventType.ERROR],
+                )
+                if r.type == EventType.ERROR:
+                    logger.warning("channel send error: %s", r.payload)
+                    return False
+                if r.type == EventType.OK:
+                    logger.info(
+                        "reply sent kind=%s channel_idx=%s len=%s (OK/legacy firmware)",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
+                pl = r.payload if isinstance(r.payload, dict) else {}
+                route = int(pl.get("type", 0))
+                exp_hex = _expected_ack_hex(pl)
+                if not exp_hex:
+                    logger.info(
+                        "reply sent kind=%s channel_idx=%s len=%s (no expected_ack)",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
+                wait_sec = cfg.flood_ack_interval_sec
+                if route != 1:
+                    if wait_sec > 0:
+                        ack = await self._mesh.wait_for_event(
+                            EventType.ACK,
+                            attribute_filters={"code": exp_hex},
+                            timeout=wait_sec,
+                        )
+                        if ack is None:
+                            logger.debug(
+                                "channel direct: no ACK within %.1fs (chan=%s)",
+                                wait_sec,
+                                channel_idx,
+                            )
+                    logger.info(
+                        "reply sent kind=%s channel_idx=%s len=%s route=direct",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
+                if wait_sec <= 0:
+                    logger.info(
+                        "reply sent kind=%s channel_idx=%s len=%s route=flood (ack wait off)",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
+                ack = await self._mesh.wait_for_event(
+                    EventType.ACK,
+                    attribute_filters={"code": exp_hex},
+                    timeout=wait_sec,
+                )
+                if ack is not None:
+                    logger.info(
+                        "reply sent kind=%s channel_idx=%s len=%s route=flood ack=ok",
+                        kind or "reply",
+                        channel_idx,
+                        len(msg),
+                    )
+                    return True
+                logger.warning(
+                    "flood channel: no repeater ACK within %.1fs, retry %s/%s chan=%s",
+                    wait_sec,
+                    attempt + 1,
+                    cfg.flood_ack_max_attempts,
+                    channel_idx,
+                )
+            return False
         except Exception:
-            logger.exception("send_chan_msg failed")
+            logger.exception("channel send failed")
             return False
 
     async def _send_dm(
@@ -145,12 +228,54 @@ class BotService:
         if d > 0:
             await asyncio.sleep(d)
         msg = _clip(text)
+        cfg = self._cfg
+        ts = int(time.time())
         try:
-            r = await self._mesh.commands.send_msg(dst, msg)
-            if r.type == EventType.ERROR:
-                logger.warning("send_msg error: %s", r.payload)
-            else:
-                logger.info("reply sent kind=%s dm len=%s", kind or "reply", len(msg))
+            for attempt in range(cfg.dm_delivery_max_attempts):
+                r = await self._mesh.commands.send_msg(dst, msg, timestamp=ts, attempt=attempt)
+                if r.type == EventType.ERROR:
+                    logger.warning("send_msg error: %s", r.payload)
+                    return
+                pl = r.payload if isinstance(r.payload, dict) else {}
+                exp_hex = _expected_ack_hex(pl)
+                if not exp_hex:
+                    logger.info(
+                        "reply sent kind=%s dm len=%s (no expected_ack)",
+                        kind or "reply",
+                        len(msg),
+                    )
+                    return
+                wait_sec = cfg.dm_delivery_wait_sec
+                if wait_sec <= 0:
+                    logger.info(
+                        "reply sent kind=%s dm len=%s (delivered ack wait off)",
+                        kind or "reply",
+                        len(msg),
+                    )
+                    return
+                ack = await self._mesh.wait_for_event(
+                    EventType.ACK,
+                    attribute_filters={"code": exp_hex},
+                    timeout=wait_sec,
+                )
+                if ack is not None:
+                    logger.info(
+                        "reply sent kind=%s dm len=%s delivered=ack",
+                        kind or "reply",
+                        len(msg),
+                    )
+                    return
+                logger.warning(
+                    "DM: no delivered ACK within %.1fs, attempt %s/%s",
+                    wait_sec,
+                    attempt + 1,
+                    cfg.dm_delivery_max_attempts,
+                )
+            logger.warning(
+                "DM: delivery not confirmed after %s attempts (kind=%s)",
+                cfg.dm_delivery_max_attempts,
+                kind or "reply",
+            )
         except Exception:
             logger.exception("send_msg failed")
 

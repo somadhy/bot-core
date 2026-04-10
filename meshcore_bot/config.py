@@ -29,6 +29,12 @@ class BotConfig:
     reply_delay_sec: float
     advert_interval_hours: float
     advert_flood: bool
+    # Flood-сообщения в канал: ждать ACK («услышали» репитеры), иначе повтор.
+    flood_ack_interval_sec: float
+    flood_ack_max_attempts: int
+    # Личные ответы: ждать ACK доставки, иначе повтор (отдельные лимиты).
+    dm_delivery_wait_sec: float
+    dm_delivery_max_attempts: int
     admin_public_keys: list[str] = field(default_factory=list)
     # Channel indices where `stop` is allowed for any sender (no pubkey; channel-only).
     admin_channel_indices: list[int] = field(default_factory=list)
@@ -45,6 +51,8 @@ class BotConfig:
         blacklist = raw.get("blacklist") or {}
         admins = raw.get("admins") or {}
         advert = raw.get("advert") or {}
+        flood_ack = raw.get("flood_ack") or {}
+        dm_delivery = raw.get("dm_delivery") or {}
         poll = raw.get("poll") or {}
         commands = raw.get("commands") or {}
 
@@ -88,6 +96,42 @@ class BotConfig:
         # Cap to avoid accidental huge values (e.g. typo); ~1 year
         if advert_interval_hours > 8760.0:
             advert_interval_hours = 8760.0
+
+        try:
+            flood_ack_interval_sec = float(flood_ack.get("interval_sec", 5) or 5)
+        except (TypeError, ValueError):
+            flood_ack_interval_sec = 5.0
+        if flood_ack_interval_sec < 0:
+            flood_ack_interval_sec = 0.0
+        if flood_ack_interval_sec > 600.0:
+            flood_ack_interval_sec = 600.0
+
+        try:
+            flood_ack_max_attempts = int(flood_ack.get("max_attempts", 3) or 3)
+        except (TypeError, ValueError):
+            flood_ack_max_attempts = 3
+        if flood_ack_max_attempts < 1:
+            flood_ack_max_attempts = 1
+        if flood_ack_max_attempts > 50:
+            flood_ack_max_attempts = 50
+
+        try:
+            dm_delivery_wait_sec = float(dm_delivery.get("wait_sec", 10) or 10)
+        except (TypeError, ValueError):
+            dm_delivery_wait_sec = 10.0
+        if dm_delivery_wait_sec < 0:
+            dm_delivery_wait_sec = 0.0
+        if dm_delivery_wait_sec > 600.0:
+            dm_delivery_wait_sec = 600.0
+
+        try:
+            dm_delivery_max_attempts = int(dm_delivery.get("max_attempts", 2) or 2)
+        except (TypeError, ValueError):
+            dm_delivery_max_attempts = 2
+        if dm_delivery_max_attempts < 1:
+            dm_delivery_max_attempts = 1
+        if dm_delivery_max_attempts > 50:
+            dm_delivery_max_attempts = 50
 
         _ttl_raw = weather.get("cache_ttl_minutes")
         if _ttl_raw is None:
@@ -175,6 +219,10 @@ class BotConfig:
             reply_delay_sec=reply_delay_sec,
             advert_interval_hours=advert_interval_hours,
             advert_flood=bool(advert.get("flood", False)),
+            flood_ack_interval_sec=flood_ack_interval_sec,
+            flood_ack_max_attempts=flood_ack_max_attempts,
+            dm_delivery_wait_sec=dm_delivery_wait_sec,
+            dm_delivery_max_attempts=dm_delivery_max_attempts,
             admin_public_keys=keys,
             admin_channel_indices=admin_chans,
             command_aliases=command_aliases,
