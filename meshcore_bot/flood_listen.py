@@ -1,4 +1,4 @@
-"""On-air flood repeat detection via RX_LOG_DATA (RF log), not companion ACK."""
+"""On-air flood repeat detection: RX_LOG_DATA (RF log) + CHANNEL_MSG_RECV (companion queue)."""
 
 from __future__ import annotations
 
@@ -33,32 +33,40 @@ def _norm_txt(s: str) -> str:
     return " ".join(s.split()).strip().casefold()
 
 
+def text_matches_sent(sent_msg: str, body: str) -> bool:
+    """Loose match for channel text (prefix nick, UTF-8, firmware quirks)."""
+    sm = sent_msg.strip()
+    body = body.strip()
+    if not sm or not body:
+        return False
+    if sm == body or sm in body or body in sm or body.endswith(sm):
+        return True
+    nb, ns = _norm_txt(body), _norm_txt(sm)
+    if ns in nb or nb in ns:
+        return True
+    for n in (8, 16, 24, 32):
+        if len(sm) >= n and sm[:n] in body:
+            return True
+    if len(ns) >= 8 and ns[:24] in nb:
+        return True
+    return False
+
+
 def rx_log_matches_flood_repeat(
     ld: dict[str, Any],
     chan_hash: str | None,
     sent_msg: str,
     sent_ts: int,
 ) -> bool:
-    """Loose match: group text on channel + time + text overlap (firmware/log variants differ)."""
     pt = ld.get("payload_typename") or ""
     pty = ld.get("payload_type")
     if pt != "GRP_TXT" and pty != 5:
         return False
-    # Do not filter by route_typename — some builds label repeats differently.
 
     ld_ch = ld.get("chan_hash")
     if chan_hash is not None and ld_ch is not None:
         if str(ld_ch).lower() != str(chan_hash).lower():
             return False
-    # If we know our chan_hash but the log has no chan_hash, still try text/time below.
-
-    st = ld.get("sender_timestamp")
-    if st is not None and sent_ts:
-        try:
-            if abs(int(st) - int(sent_ts)) > 900:
-                return False
-        except (TypeError, ValueError):
-            pass
 
     body = (ld.get("message") or "").strip()
     sm = sent_msg.strip()
@@ -66,6 +74,7 @@ def rx_log_matches_flood_repeat(
         return False
 
     if not body:
+        st = ld.get("sender_timestamp")
         if chan_hash and ld_ch is not None:
             return str(ld_ch).lower() == str(chan_hash).lower()
         if chan_hash is None and st is not None and sent_ts:
@@ -75,18 +84,57 @@ def rx_log_matches_flood_repeat(
                 return False
         return False
 
-    if sm == body or sm in body or body in sm or body.endswith(sm):
-        return True
-    nb, ns = _norm_txt(body), _norm_txt(sm)
-    if ns in nb or nb in ns:
-        return True
-    # Prefix: weather and long lines often differ only by prefix (Nick: …)
-    for n in (8, 16, 24, 32):
-        if len(sm) >= n and sm[:n] in body:
-            return True
-    if len(ns) >= 8 and ns[:24] in nb:
-        return True
-    return False
+    if not text_matches_sent(sm, body):
+        return False
+    st = ld.get("sender_timestamp")
+    if st is not None and sent_ts:
+        try:
+            if abs(int(st) - int(sent_ts)) > 86400:
+                return False
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
+def channel_msg_matches_flood_repeat(
+    pl: dict[str, Any],
+    channel_idx: int,
+    sent_msg: str,
+    sent_ts: int,
+) -> bool:
+    """Match companion CHANNEL_MSG_RECV (what many firmwares send instead of PACKET_LOG_DATA)."""
+    idx = pl.get("channel_idx")
+    try:
+        ch = int(idx) if idx is not None else -1
+    except (TypeError, ValueError):
+        return False
+    if ch != channel_idx:
+        return False
+
+    text = (pl.get("text") or "").strip()
+    sm = sent_msg.strip()
+    if not sm:
+        return False
+    if not text:
+        return False
+    if not text_matches_sent(sm, text):
+        return False
+    st = pl.get("sender_timestamp")
+    if st is not None and sent_ts:
+        try:
+            if abs(int(st) - int(sent_ts)) > 86400:
+                return False
+        except (TypeError, ValueError):
+            pass
+    return True
+
+
+def _dedup_key(rec: dict[str, Any]) -> tuple[Any, ...]:
+    ts = rec.get("sender_timestamp")
+    t = rec.get("text") or rec.get("message") or ""
+    src = rec.get("_wire", "")
+    p = rec.get("path") or ""
+    return (ts, t[:240], src, str(p)[:80])
 
 
 def repeater_line(mesh: MeshCore, path_tail_hex: str) -> str:
@@ -101,6 +149,25 @@ def repeater_line(mesh: MeshCore, path_tail_hex: str) -> str:
     return path_tail_hex
 
 
+def _path_from_record(rec: dict[str, Any]) -> tuple[str, str]:
+    """Return (path_display, last_hop_hex) for logging."""
+    if rec.get("path_hash_mode") == -1:
+        return "(direct)", ""
+    path_hex = str(rec.get("path") or "")
+    pl = int(rec.get("path_len") or 0)
+    phm = rec.get("path_hash_mode")
+    if phm is not None and isinstance(phm, int) and phm >= 0:
+        phs = (phm & 3) + 1
+    else:
+        phs = int(rec.get("path_hash_size") or 1)
+    if path_hex and pl > 0 and pl != 255:
+        segs = path_segments(path_hex, pl, phs)
+        last = segs[-1] if segs else ""
+        disp = "/".join(segs) if segs else path_hex
+        return disp, last
+    return "(no path)", ""
+
+
 async def listen_flood_repeater_rx(
     mesh: MeshCore,
     channel_idx: int,
@@ -109,61 +176,74 @@ async def listen_flood_repeater_rx(
     duration_sec: float,
 ) -> int:
     """
-    For ``duration_sec``, collect RX_LOG_DATA packets that look like our flood channel
-    message (decrypted GRP_TXT, FLOOD). Logs each path, last hop (typical forwarder),
-    and aggregate counts. Requires ``mesh.set_decrypt_channel_logs(True)`` and
-    channel slots loaded (e.g. get_channel) so the parser can decrypt and match.
+    Collect flood repeats for ``duration_sec`` from:
+
+    - ``RX_LOG_DATA`` — raw RF log (0x88), if the radio pushes it.
+    - ``CHANNEL_MSG_RECV`` — normal companion path for received channel lines (often the only one).
+
+    Dedupes (timestamp, text, source, path) so the same packet does not count twice.
     """
     if duration_sec <= 0:
         return 0
 
     chan_hash = channel_hash_for_idx(mesh, channel_idx)
     received: list[dict[str, Any]] = []
+    seen_keys: set[tuple[Any, ...]] = set()
 
-    async def on_rx(event: Event) -> None:
+    def _add(rec: dict[str, Any], wire: str) -> None:
+        rec = {**rec, "_wire": wire}
+        k = _dedup_key(rec)
+        if k in seen_keys:
+            return
+        seen_keys.add(k)
+        received.append(rec)
+
+    async def on_rx_log(event: Event) -> None:
         ld = event.payload if isinstance(event.payload, dict) else {}
         if not rx_log_matches_flood_repeat(ld, chan_hash, sent_msg, sent_ts):
             return
-        received.append(ld)
+        _add(ld, "RX_LOG_DATA")
 
-    sub = mesh.subscribe(EventType.RX_LOG_DATA, on_rx)
+    async def on_chan_msg(event: Event) -> None:
+        pl = event.payload if isinstance(event.payload, dict) else {}
+        if not channel_msg_matches_flood_repeat(pl, channel_idx, sent_msg, sent_ts):
+            return
+        _add(pl, "CHANNEL_MSG_RECV")
+
+    sub_log = mesh.subscribe(EventType.RX_LOG_DATA, on_rx_log)
+    sub_chan = mesh.subscribe(EventType.CHANNEL_MSG_RECV, on_chan_msg)
     try:
         await asyncio.sleep(duration_sec)
     finally:
-        sub.unsubscribe()
+        sub_log.unsubscribe()
+        sub_chan.unsubscribe()
 
     seen_last: dict[str, int] = {}
-    for ld in received:
-        path_hex = str(ld.get("path") or "")
-        pl = int(ld.get("path_len") or 0)
-        phs = int(ld.get("path_hash_size") or 1)
-        segs = path_segments(path_hex, pl, phs)
-        last = segs[-1] if segs else ""
+    for rec in received:
+        _, last = _path_from_record(rec)
         if last:
             seen_last[last] = seen_last.get(last, 0) + 1
 
     logger.info(
-        "flood air listen: channel_idx=%s duration_s=%.1f matches=%s chan_hash=%s",
+        "flood air listen: channel_idx=%s duration_s=%.1f matches=%s (RX_LOG + CHANNEL_MSG) chan_hash=%s",
         channel_idx,
         duration_sec,
         len(received),
         chan_hash,
     )
 
-    for i, ld in enumerate(received):
-        path_hex = str(ld.get("path") or "")
-        pl = int(ld.get("path_len") or 0)
-        phs = int(ld.get("path_hash_size") or 1)
-        segs = path_segments(path_hex, pl, phs)
-        last = segs[-1] if segs else ""
-        path_disp = "/".join(segs) if segs else path_hex or "(empty)"
+    for i, rec in enumerate(received):
+        path_disp, last = _path_from_record(rec)
+        wire = rec.get("_wire", "?")
         logger.info(
-            "flood air listen: rx[%s] path=%s last_hop=%s snr=%s rssi=%s",
+            "flood air listen: rx[%s] wire=%s path=%s last_hop=%s snr=%s rssi=%s SNR=%s",
             i,
+            wire,
             path_disp,
             repeater_line(mesh, last),
-            ld.get("snr"),
-            ld.get("rssi"),
+            rec.get("snr"),
+            rec.get("rssi"),
+            rec.get("SNR"),
         )
 
     if seen_last:
