@@ -29,31 +29,62 @@ def path_segments(path_hex: str, path_len: int, path_hash_size: int) -> list[str
     return [path_hex[i : i + step] for i in range(0, need, step)]
 
 
+def _norm_txt(s: str) -> str:
+    return " ".join(s.split()).strip().casefold()
+
+
 def rx_log_matches_flood_repeat(
     ld: dict[str, Any],
     chan_hash: str | None,
     sent_msg: str,
     sent_ts: int,
 ) -> bool:
-    if ld.get("payload_typename") != "GRP_TXT":
+    """Loose match: group text on channel + time + text overlap (firmware/log variants differ)."""
+    pt = ld.get("payload_typename") or ""
+    pty = ld.get("payload_type")
+    if pt != "GRP_TXT" and pty != 5:
         return False
-    rt = ld.get("route_typename") or ""
-    if rt not in ("FLOOD", "TC_FLOOD"):
-        return False
-    if chan_hash is not None and ld.get("chan_hash") != chan_hash:
-        return False
+    # Do not filter by route_typename — some builds label repeats differently.
+
+    ld_ch = ld.get("chan_hash")
+    if chan_hash is not None and ld_ch is not None:
+        if str(ld_ch).lower() != str(chan_hash).lower():
+            return False
+    # If we know our chan_hash but the log has no chan_hash, still try text/time below.
+
     st = ld.get("sender_timestamp")
-    if st is not None:
+    if st is not None and sent_ts:
         try:
-            if abs(int(st) - int(sent_ts)) > 3:
+            if abs(int(st) - int(sent_ts)) > 900:
                 return False
         except (TypeError, ValueError):
             pass
+
     body = (ld.get("message") or "").strip()
-    if not body:
-        return False
     sm = sent_msg.strip()
-    if sm == body or sm in body or body.endswith(sm):
+    if not sm:
+        return False
+
+    if not body:
+        if chan_hash and ld_ch is not None:
+            return str(ld_ch).lower() == str(chan_hash).lower()
+        if chan_hash is None and st is not None and sent_ts:
+            try:
+                return abs(int(st) - int(sent_ts)) <= 300
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    if sm == body or sm in body or body in sm or body.endswith(sm):
+        return True
+    nb, ns = _norm_txt(body), _norm_txt(sm)
+    if ns in nb or nb in ns:
+        return True
+    # Prefix: weather and long lines often differ only by prefix (Nick: …)
+    for n in (8, 16, 24, 32):
+        if len(sm) >= n and sm[:n] in body:
+            return True
+    if len(ns) >= 8 and ns[:24] in nb:
         return True
     return False
 
