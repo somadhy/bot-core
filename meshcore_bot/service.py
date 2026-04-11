@@ -15,6 +15,7 @@ from meshcore_bot.blacklist import Blacklist
 from meshcore_bot.channel_info import fetch_channel_table
 from meshcore_bot.commands.router import CmdKind, parse_incoming
 from meshcore_bot.commands.weather_cmd import fetch_weather_line
+from meshcore_bot.flood_listen import listen_flood_repeater_rx
 from meshcore_bot.textutil import clip_utf8_bytes, pack_lines_utf8_chunks
 
 if TYPE_CHECKING:
@@ -55,11 +56,12 @@ def _clip(text: str, max_len: int = MAX_MESSAGE_LEN) -> str:
     return t[: max_len - 2] + ".."
 
 
-def _chan_cmd_bytes(channel_idx: int, msg: str, *, timestamp: int | None = None) -> bytes:
+def _chan_cmd_bytes(channel_idx: int, msg: str, *, timestamp: int | None = None) -> tuple[bytes, int]:
     """Companion CMD_SEND_CHANNEL_MESSAGE (same wire format as meshcore `send_chan_msg`)."""
     ts = int(time.time()) if timestamp is None else int(timestamp)
     ts_bytes = ts.to_bytes(4, "little")
-    return b"\x03\x00" + channel_idx.to_bytes(1, "little") + ts_bytes + msg.encode("utf-8")
+    data = b"\x03\x00" + channel_idx.to_bytes(1, "little") + ts_bytes + msg.encode("utf-8")
+    return data, ts
 
 
 def _expected_ack_hex(payload: dict[str, Any]) -> str:
@@ -180,14 +182,13 @@ class BotService:
         cfg = self._cfg
         try:
             for attempt in range(cfg.flood_ack_max_attempts):
-                data = _chan_cmd_bytes(channel_idx, msg)
+                data, sent_ts = _chan_cmd_bytes(channel_idx, msg)
                 r = await self._send_chan_companion_response(data)
                 if r.type == EventType.ERROR:
                     reason = (r.payload or {}).get("reason") if isinstance(r.payload, dict) else None
                     if reason in ("timeout", "no_event_received"):
                         logger.warning(
-                            "channel send: companion timeout waiting for response kind=%s channel_idx=%s "
-                            "payload=%s",
+                            "channel send: companion timeout kind=%s channel_idx=%s payload=%s",
                             kind or "reply",
                             channel_idx,
                             r.payload,
@@ -195,126 +196,62 @@ class BotService:
                     else:
                         logger.warning("channel send error: %s", r.payload)
                     return False
+                route = 0
                 if r.type == EventType.OK:
                     logger.info(
-                        "channel send: OK-only response (no MSG_SENT), cannot use expected_ack/ACK "
-                        "kind=%s channel_idx=%s len=%s",
+                        "channel send: OK-only (no MSG_SENT route flag) kind=%s channel_idx=%s len=%s",
                         kind or "reply",
                         channel_idx,
                         len(msg),
                     )
-                    return True
-                pl = r.payload if isinstance(r.payload, dict) else {}
-                route = int(pl.get("type", 0))
-                route_label = "flood" if route == 1 else "direct"
-                exp_hex = _expected_ack_hex(pl)
-                st_ms = _suggested_timeout_ms(pl)
-                if not exp_hex:
+                    route = -1
+                else:
+                    pl = r.payload if isinstance(r.payload, dict) else {}
+                    route = int(pl.get("type", 0))
+                    route_label = "flood" if route == 1 else "direct"
+                    exp_hex = _expected_ack_hex(pl)
+                    st_ms = _suggested_timeout_ms(pl)
                     logger.info(
-                        "channel send: MSG_SENT without expected_ack kind=%s channel_idx=%s "
-                        "len=%s route=%s suggested_timeout_ms=%s",
+                        "channel send: MSG_SENT kind=%s channel_idx=%s len=%s route=%s "
+                        "expected_ack=%s suggested_timeout_ms=%s",
                         kind or "reply",
                         channel_idx,
                         len(msg),
                         route_label,
+                        exp_hex,
                         st_ms,
                     )
-                    return True
-                logger.info(
-                    "channel send: MSG_SENT kind=%s channel_idx=%s len=%s route=%s "
-                    "expected_ack=%s suggested_timeout_ms=%s",
-                    kind or "reply",
-                    channel_idx,
-                    len(msg),
-                    route_label,
-                    exp_hex,
-                    st_ms,
-                )
-                wait_sec = cfg.flood_ack_interval_sec
-                if route != 1:
-                    if wait_sec > 0:
-                        logger.info(
-                            "channel send: waiting for ACK (direct) expected_ack=%s timeout=%.1fs",
-                            exp_hex,
-                            wait_sec,
-                        )
-                        ack = await self._mesh.wait_for_event(
-                            EventType.ACK,
-                            attribute_filters={"code": exp_hex},
-                            timeout=wait_sec,
-                        )
-                        if ack is None:
-                            logger.info(
-                                "channel send: ACK timeout (direct) expected_ack=%s waited_s=%.1fs "
-                                "channel_idx=%s",
-                                exp_hex,
-                                wait_sec,
-                                channel_idx,
-                            )
-                        else:
-                            logger.info(
-                                "channel send: ACK received (direct) expected_ack=%s channel_idx=%s %s",
-                                exp_hex,
-                                channel_idx,
-                                _ack_log_bits(ack),
-                            )
-                    else:
-                        logger.info(
-                            "channel send: ACK wait skipped (direct, interval_sec=0) "
-                            "expected_ack=%s channel_idx=%s",
-                            exp_hex,
-                            channel_idx,
-                        )
-                    return True
-                if wait_sec <= 0:
+
+                listen_sec = cfg.flood_ack_interval_sec
+                do_listen = listen_sec > 0 and (route == 1 or route == -1)
+                n = 0
+                if route == 0:
                     logger.info(
-                        "channel send: flood ACK wait disabled (interval_sec=0) expected_ack=%s "
-                        "channel_idx=%s len=%s",
-                        exp_hex,
-                        channel_idx,
-                        len(msg),
-                    )
-                    return True
-                logger.info(
-                    "channel send: waiting for ACK (flood/heard) expected_ack=%s timeout=%.1fs "
-                    "attempt=%s/%s channel_idx=%s",
-                    exp_hex,
-                    wait_sec,
-                    attempt + 1,
-                    cfg.flood_ack_max_attempts,
-                    channel_idx,
-                )
-                ack = await self._mesh.wait_for_event(
-                    EventType.ACK,
-                    attribute_filters={"code": exp_hex},
-                    timeout=wait_sec,
-                )
-                if ack is not None:
-                    logger.info(
-                        "channel send: ACK received (flood/heard) kind=%s channel_idx=%s len=%s "
-                        "expected_ack=%s %s",
+                        "channel send: direct route, skip flood air listen kind=%s channel_idx=%s",
                         kind or "reply",
                         channel_idx,
-                        len(msg),
-                        exp_hex,
-                        _ack_log_bits(ack),
                     )
-                    return True
-                logger.warning(
-                    "channel send: ACK timeout (flood) expected_ack=%s waited_s=%.1fs retry=%s/%s "
-                    "channel_idx=%s",
-                    exp_hex,
-                    wait_sec,
-                    attempt + 1,
-                    cfg.flood_ack_max_attempts,
-                    channel_idx,
-                )
-            logger.warning(
-                "channel send: failed after %s flood attempts (no ACK) channel_idx=%s kind=%s",
-                cfg.flood_ack_max_attempts,
-                channel_idx,
-                kind or "reply",
-            )
+                elif do_listen:
+                    n = await listen_flood_repeater_rx(
+                        self._mesh,
+                        channel_idx,
+                        msg,
+                        sent_ts,
+                        listen_sec,
+                    )
+                    if n == 0 and attempt + 1 < cfg.flood_ack_max_attempts:
+                        logger.warning(
+                            "channel send: zero on-air flood repeats, resend attempt %s/%s",
+                            attempt + 2,
+                            cfg.flood_ack_max_attempts,
+                        )
+                        continue
+                elif route == 1 and listen_sec <= 0:
+                    logger.info(
+                        "channel send: flood route but flood_ack.interval_sec=0, skip air listen"
+                    )
+
+                return True
             return False
         except Exception:
             logger.exception("channel send failed")

@@ -29,7 +29,7 @@ class BotConfig:
     reply_delay_sec: float
     advert_interval_hours: float
     advert_flood: bool
-    # Flood-сообщения в канал: ждать ACK («услышали» репитеры), иначе повтор.
+    # Flood channel TX: listen on RF for repeater repeats (RX_LOG_DATA), then optional resend.
     flood_ack_interval_sec: float
     flood_ack_max_attempts: int
     # Личные ответы: ждать ACK доставки, иначе повтор (отдельные лимиты).

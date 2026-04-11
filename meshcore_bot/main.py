@@ -49,6 +49,9 @@ async def async_main() -> int:
         logger.error("Could not connect to MeshCore on %s", cfg.serial_device)
         return 1
 
+    # RX_LOG_DATA GRP_TXT decryption for flood air listen (matches channel slots from get_channel).
+    mesh.set_decrypt_channel_logs(True)
+
     try:
         cr = await mesh.commands.get_contacts()
         if cr.type == EventType.ERROR:
