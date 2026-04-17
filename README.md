@@ -83,6 +83,7 @@ python -m meshcore_bot --diagnose
 | Команда | Описание |
 |--------|----------|
 | `погода` / `weather` [город] | Погода; без города — `weather.default_city` |
+| `время` / `time` [город] | Локальное время в городе; без города — `weather.default_city` |
 | `помощь` / `help` | Короткий список команд |
 | `стоп` / `stop` | Остановка процесса: в **личке** — только если публичный ключ отправителя есть в `admins.public_keys`; в **канале** — только на индексах из `admins.channel_indices` |
 | `каналы` / `channels` | Список каналов из `channels.enabled_indices`: строки вида `индекс: имя` (имя с companion). **Только личка** и **только админ** (`admins.public_keys`). Длинный ответ режется на несколько сообщений (**каждое ≤ 150 байт UTF-8**, с префиксом `@[ник] `); между частями пауза не меньше `reply_delay_sec`, а при `reply_delay_sec: 0` — не меньше ~0,35 с. В каналах команда не обрабатывается. |
@@ -90,7 +91,7 @@ python -m meshcore_bot --diagnose
 
 Ответы бота начинаются с `@[ник]` (в канале — из части до `:` в вашей строке).
 
-Дополнительные триггеры задаются в **`commands.*.aliases`** в `config.yaml` (в т.ч. `commands.channels`, `commands.msg`).
+Дополнительные триггеры задаются в **`commands.*.aliases`** в `config.yaml` (в т.ч. `commands.time`, `commands.channels`, `commands.msg`).
 
 ## Конфигурация
 
@@ -112,7 +113,7 @@ python -m meshcore_bot --diagnose
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex): остановка из **лички**, команды **`каналы` / `channels`** и **`мсг` / `msg`**
 - **`admins.channel_indices`**: индексы каналов (из `channels.enabled_indices`), где разрешена команда **`стоп` / `stop`** без проверки ключа отправителя
-- **`commands`**: опциональные **`aliases`** для команд `weather`, `help`, `stop`, `channels`, `msg` (см. [config.example.yaml](config.example.yaml))
+- **`commands`**: опциональные **`aliases`** для команд `weather`, `time`, `help`, `stop`, `channels`, `msg` (см. [config.example.yaml](config.example.yaml))
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет (в т.ч. не будет админских команд в ЛС)
 
 ### Keepalive и предупреждение «No CHANNEL/CONTACT ... for 90s»

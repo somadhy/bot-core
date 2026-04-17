@@ -9,7 +9,7 @@
     "internal": "Bot error."
   },
   "help": {
-    "body": "Commands: weather [city] | погода [город] | help | помощь"
+    "body": "Commands: weather [city] | погода [город] | time [city] | время [город] | help | помощь"
   },
   "admin": {
     "shutdown_ok": "Shutting down.",

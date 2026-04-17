@@ -36,7 +36,8 @@ class BotConfig:
     # Channel indices where `stop` is allowed for any sender (no pubkey; channel-only).
     admin_channel_indices: list[int] = field(default_factory=list)
     # Extra aliases for commands, loaded from config.yaml. Keys are canonical command
-    # names ("weather", "help", "stop", "channels", "msg"); values are lists of additional trigger words.
+    # names ("weather", "time", "help", "stop", "channels", "msg");
+    # values are lists of additional trigger words.
     command_aliases: dict[str, list[str]] = field(default_factory=dict)
 
     @classmethod
@@ -147,6 +148,8 @@ class BotConfig:
         # commands:
         #   weather:
         #     aliases: [wz, w]
+        #   time:
+        #     aliases: [tm]
         #   help:
         #     aliases: [h]
         #   stop:
@@ -171,6 +174,7 @@ class BotConfig:
 
         command_aliases = {
             "weather": _aliases_for("weather"),
+            "time": _aliases_for("time"),
             "help": _aliases_for("help"),
             "stop": _aliases_for("stop"),
             "channels": _aliases_for("channels"),

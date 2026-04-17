@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -14,7 +15,7 @@ from meshcore_bot.auth import is_admin
 from meshcore_bot.blacklist import Blacklist
 from meshcore_bot.channel_info import fetch_channel_table
 from meshcore_bot.commands.router import CmdKind, parse_incoming
-from meshcore_bot.commands.weather_cmd import fetch_weather_line
+from meshcore_bot.commands.weather_cmd import WeatherPayload, fetch_weather_payload
 from meshcore_bot.textutil import clip_utf8_bytes, pack_lines_utf8_chunks
 
 if TYPE_CHECKING:
@@ -110,6 +111,29 @@ def _dm_mention_body_budget(nick: str, total_max: int) -> int:
 
 def _weather_reply(nick: str, body: str) -> str:
     return clip_utf8_bytes(_reply_mention(nick, body), WEATHER_REPLY_MAX_BYTES)
+
+
+def _local_hhmm_from_offset(tz_offset_seconds: int | None) -> str | None:
+    if tz_offset_seconds is None:
+        return None
+    tz = _dt.timezone(_dt.timedelta(seconds=int(tz_offset_seconds)))
+    return _dt.datetime.now(tz).strftime("%H:%M")
+
+
+def _append_weather_local_time(payload: WeatherPayload) -> str:
+    body = payload.weather_body
+    local_hhmm = _local_hhmm_from_offset(payload.tz_offset_seconds)
+    if local_hhmm is None:
+        return body
+    return f"{body}\n🕒{local_hhmm}"
+
+
+def _time_line(city: str, tz_offset_seconds: int | None) -> str:
+    local_hhmm = _local_hhmm_from_offset(tz_offset_seconds)
+    city_show = city.strip() or "?"
+    if local_hhmm is None:
+        return f"{city_show}\n🕒?"
+    return f"{city_show}\n🕒{local_hhmm}"
 
 
 class BotService:
@@ -305,8 +329,23 @@ class BotService:
                     kind="weather",
                 )
                 return
-            line = await fetch_weather_line(city, self._cfg, self._i18n)
+            payload = await fetch_weather_payload(city, self._cfg, self._i18n, use_cache=True)
+            line = _append_weather_local_time(payload)
             await self._send_chan(ch, _weather_reply(nick, line), kind="weather")
+            return
+
+        if parsed.kind == CmdKind.TIME:
+            city = (parsed.arg or "").strip() or (self._cfg.weather_default_city or "").strip()
+            if not city:
+                await self._send_chan(
+                    ch,
+                    _weather_reply(nick, self._i18n.t("errors.no_default_city")),
+                    kind="time",
+                )
+                return
+            payload = await fetch_weather_payload(city, self._cfg, self._i18n, use_cache=False)
+            line = _time_line(city, payload.tz_offset_seconds)
+            await self._send_chan(ch, _weather_reply(nick, line), kind="time")
 
     async def _on_contact_msg(self, event: Event) -> None:
         payload = event.payload if isinstance(event.payload, dict) else {}
@@ -441,5 +480,20 @@ class BotService:
                     kind="weather",
                 )
                 return
-            line = await fetch_weather_line(city, self._cfg, self._i18n)
+            payload = await fetch_weather_payload(city, self._cfg, self._i18n, use_cache=True)
+            line = _append_weather_local_time(payload)
             await self._send_dm(dst, _weather_reply(nick, line), kind="weather")
+            return
+
+        if parsed.kind == CmdKind.TIME:
+            city = (parsed.arg or "").strip() or (self._cfg.weather_default_city or "").strip()
+            if not city:
+                await self._send_dm(
+                    dst,
+                    _weather_reply(nick, self._i18n.t("errors.no_default_city")),
+                    kind="time",
+                )
+                return
+            payload = await fetch_weather_payload(city, self._cfg, self._i18n, use_cache=False)
+            line = _time_line(city, payload.tz_offset_seconds)
+            await self._send_dm(dst, _weather_reply(nick, line), kind="time")

@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 class CmdKind(Enum):
     NONE = auto()
     WEATHER = auto()
+    TIME = auto()
     HELP = auto()
     STOP = auto()
     CHANNELS = auto()
@@ -22,7 +23,7 @@ class CmdKind(Enum):
 @dataclass
 class ParsedCommand:
     kind: CmdKind
-    arg: str = ""  # city for weather, else empty
+    arg: str = ""  # city for weather/time, else empty
 
 
 def _normalize_cmd_text(text: str) -> str:
@@ -63,6 +64,7 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
 
     base_aliases = {
         CmdKind.WEATHER: {"weather", "погода"},
+        CmdKind.TIME: {"time", "время"},
         CmdKind.HELP: {"help", "помощь"},
         CmdKind.STOP: {"stop", "стоп"},
         CmdKind.CHANNELS: {"channels", "каналы"},
@@ -78,12 +80,14 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
             return base_aliases[kind] | {a for a in extra if a}
 
         weather_names = _extend(CmdKind.WEATHER, "weather")
+        time_names = _extend(CmdKind.TIME, "time")
         help_names = _extend(CmdKind.HELP, "help")
         stop_names = _extend(CmdKind.STOP, "stop")
         channels_names = _extend(CmdKind.CHANNELS, "channels")
         msg_names = _extend(CmdKind.MSG, "msg")
     else:
         weather_names = base_aliases[CmdKind.WEATHER]
+        time_names = base_aliases[CmdKind.TIME]
         help_names = base_aliases[CmdKind.HELP]
         stop_names = base_aliases[CmdKind.STOP]
         channels_names = base_aliases[CmdKind.CHANNELS]
@@ -91,6 +95,8 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
 
     if name in weather_names:
         return ParsedCommand(CmdKind.WEATHER, arg)
+    if name in time_names:
+        return ParsedCommand(CmdKind.TIME, arg)
     if name in help_names:
         return ParsedCommand(CmdKind.HELP)
     if name in stop_names:

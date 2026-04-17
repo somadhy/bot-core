@@ -9,7 +9,7 @@
     "internal": "Ошибка бота."
   },
   "help": {
-    "body": "Команды: погода [город] | weather [city] | помощь | help"
+    "body": "Команды: погода [город] | weather [city] | время [город] | time [city] | помощь | help"
   },
   "admin": {
     "shutdown_ok": "Останавливаюсь.",

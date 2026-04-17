@@ -13,6 +13,7 @@ import os
 import sqlite3
 import tempfile
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 import httpx
@@ -26,8 +27,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _weather_lock = asyncio.Lock()
-# (provider, locale, city_lower) -> (expires_monotonic, line)
-_weather_cache: dict[tuple[str, str, str], tuple[float, str]] = {}
+# (provider, locale, city_lower) -> (expires_monotonic, payload)
+_weather_cache: dict[tuple[str, str, str], tuple[float, "WeatherPayload"]] = {}
 
 _meteostat_lock = asyncio.Lock()
 _meteostat_db_local_path: str | None = None
@@ -38,6 +39,11 @@ _ErrKind = Literal[
     "unsupported_provider",
     "provider_error",
 ]
+
+@dataclass(frozen=True)
+class WeatherPayload:
+    weather_body: str
+    tz_offset_seconds: int | None = None
 
 
 def _weather_cache_key(city: str, provider_norm: str, locale: str) -> tuple[str, str, str]:
@@ -165,6 +171,17 @@ def _format_weather_line(
 
 
 async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
+    payload = await fetch_weather_payload(city, cfg, i18n)
+    return payload.weather_body
+
+
+async def fetch_weather_payload(
+    city: str,
+    cfg: BotConfig,
+    i18n: I18n,
+    *,
+    use_cache: bool = True,
+) -> WeatherPayload:
     def _norm(p: str) -> str:
         p = (p or "").strip().lower()
         if p in ("openmeteo", "open-meteo"):
@@ -191,45 +208,45 @@ async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
 
     ttl_min = float(cfg.weather_cache_ttl_minutes or 0)
 
-    last_line: str | None = None
+    last_payload: WeatherPayload | None = None
     city_not_found_failures = 0
     for idx, provider_norm in enumerate(providers):
-        if ttl_min > 0:
+        if use_cache and ttl_min > 0:
             key = _weather_cache_key(city, provider_norm, str(cfg.locale))
             async with _weather_lock:
                 now = time.monotonic()
                 _weather_prune_expired(now)
                 hit = _weather_cache.get(key)
                 if hit is not None:
-                    exp, line = hit
+                    exp, payload = hit
                     if now < exp:
                         logger.debug(
                             "weather cache hit city=%r provider=%s", city.strip(), provider_norm
                         )
-                        return line
+                        return payload
 
         if provider_norm == "openmeteo":
-            ok, line, err = await _fetch_open_meteo(city, cfg, i18n)
+            ok, payload, err = await _fetch_open_meteo(city, cfg, i18n)
         elif provider_norm == "openweathermap":
-            ok, line, err = await _fetch_open_weather_map(city, cfg, i18n)
+            ok, payload, err = await _fetch_open_weather_map(city, cfg, i18n)
         elif provider_norm == "meteostat":
-            ok, line, err = await _fetch_meteostat(city, cfg, i18n)
+            ok, payload, err = await _fetch_meteostat(city, cfg, i18n)
         elif provider_norm == "meteostat_rapidapi":
-            ok, line, err = await _fetch_meteostat_rapidapi(city, cfg, i18n)
+            ok, payload, err = await _fetch_meteostat_rapidapi(city, cfg, i18n)
         else:
-            ok, line, err = (
+            ok, payload, err = (
                 False,
-                i18n.t("errors.weather_failed", detail="unsupported provider"),
+                WeatherPayload(i18n.t("errors.weather_failed", detail="unsupported provider")),
                 "unsupported_provider",
             )
 
         if ok:
-            if ttl_min > 0:
+            if use_cache and ttl_min > 0:
                 key = _weather_cache_key(city, provider_norm, str(cfg.locale))
                 async with _weather_lock:
                     now = time.monotonic()
                     _weather_prune_expired(now)
-                    _weather_cache[key] = (now + ttl_min * 60.0, line)
+                    _weather_cache[key] = (now + ttl_min * 60.0, payload)
                     logger.debug("weather cache store key=%s ttl_min=%s", key, ttl_min)
             if idx > 0:
                 logger.info(
@@ -238,9 +255,9 @@ async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
                     provider_norm,
                     city.strip(),
                 )
-            return line
+            return payload
 
-        last_line = line
+        last_payload = payload
         if err == "city_not_found":
             city_not_found_failures += 1
         if idx + 1 < len(providers):
@@ -251,8 +268,8 @@ async def fetch_weather_line(city: str, cfg: BotConfig, i18n: I18n) -> str:
             )
 
     if providers and city_not_found_failures == len(providers):
-        return i18n.t("errors.city_not_found_all")
-    return last_line or i18n.t("errors.weather_failed", detail="no providers configured")
+        return WeatherPayload(i18n.t("errors.city_not_found_all"))
+    return last_payload or WeatherPayload(i18n.t("errors.weather_failed", detail="no providers configured"))
 
 
 def _meteostat_coco_to_wmo_bucket(coco: int | None) -> int:
@@ -439,7 +456,9 @@ async def _meteostat_fetch_latest_hour(station_id: str) -> dict[str, float | int
     return None
 
 
-async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str, _ErrKind]:
+async def _fetch_meteostat(
+    city: str, cfg: BotConfig, i18n: I18n
+) -> tuple[bool, WeatherPayload, _ErrKind]:
     # Use Open-Meteo geocoding to get coordinates (no API key).
     lang = "ru" if cfg.locale == "ru" else "en"
     lang_geo = "ru" if lang == "ru" else "en"
@@ -454,16 +473,25 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
             data = gr.json()
             results = data.get("results") or []
             if not results:
-                return False, i18n.t("errors.city_not_found"), "city_not_found"
+                return False, WeatherPayload(i18n.t("errors.city_not_found")), "city_not_found"
             g0 = results[0]
             lat, lon = float(g0["latitude"]), float(g0["longitude"])
             name = str(g0.get("name") or city)
+            tz_offset = g0.get("utc_offset_seconds")
     except httpx.HTTPStatusError as e:
         logger.warning("Meteostat geocode HTTP error: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=e.response.status_code), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=e.response.status_code)),
+            "provider_error",
+        )
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
         logger.warning("Meteostat geocode failed: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=str(e)[:80]), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=str(e)[:80])),
+            "provider_error",
+        )
 
     async with _meteostat_lock:
         try:
@@ -472,7 +500,7 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
             logger.warning("Meteostat stations.db download failed: %r", e)
             return (
                 False,
-                i18n.t("errors.weather_failed", detail="stations db download failed"),
+                WeatherPayload(i18n.t("errors.weather_failed", detail="stations db download failed")),
                 "provider_error",
             )
 
@@ -482,12 +510,16 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
         logger.warning("Meteostat stations.db query failed: %r", e)
         return (
             False,
-            i18n.t("errors.weather_failed", detail="stations db query failed"),
+            WeatherPayload(i18n.t("errors.weather_failed", detail="stations db query failed")),
             "provider_error",
         )
 
     if not station_ids:
-        return False, i18n.t("errors.weather_failed", detail="no stations nearby"), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail="no stations nearby")),
+            "provider_error",
+        )
 
     for sid in station_ids:
         rec = await _meteostat_fetch_latest_hour(sid)
@@ -508,30 +540,41 @@ async def _fetch_meteostat(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool,
 
         tf = float(temp)
         t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
-        return True, _format_weather_line(
-            name,
-            t_str,
-            wmo_like,
-            float(hum),
-            float(wind_ms),
-            float(prcp),
-            pressure_hpa,
-            cfg.locale,
-        ), "provider_error"
+        return (
+            True,
+            WeatherPayload(
+                _format_weather_line(
+                    name,
+                    t_str,
+                    wmo_like,
+                    float(hum),
+                    float(wind_ms),
+                    float(prcp),
+                    pressure_hpa,
+                    cfg.locale,
+                ),
+                int(tz_offset) if tz_offset is not None else None,
+            ),
+            "provider_error",
+        )
 
-    return False, i18n.t("errors.weather_failed", detail="no recent station data"), "provider_error"
+    return (
+        False,
+        WeatherPayload(i18n.t("errors.weather_failed", detail="no recent station data")),
+        "provider_error",
+    )
 
 
 async def _fetch_meteostat_rapidapi(
     city: str, cfg: BotConfig, i18n: I18n
-) -> tuple[bool, str, _ErrKind]:
+) -> tuple[bool, WeatherPayload, _ErrKind]:
     """
     Meteostat JSON API via RapidAPI (requires RAPIDAPI_KEY).
     Docs: https://dev.meteostat.net/api
     """
     headers = _rapidapi_headers(METEOSTAT_RAPIDAPI_HOST)
     if headers is None:
-        return False, i18n.t("errors.rapidapi_not_configured"), "not_configured"
+        return False, WeatherPayload(i18n.t("errors.rapidapi_not_configured")), "not_configured"
 
     lang = "ru" if cfg.locale == "ru" else "en"
     lang_geo = "ru" if lang == "ru" else "en"
@@ -547,16 +590,25 @@ async def _fetch_meteostat_rapidapi(
             data = gr.json()
             results = data.get("results") or []
             if not results:
-                return False, i18n.t("errors.city_not_found"), "city_not_found"
+                return False, WeatherPayload(i18n.t("errors.city_not_found")), "city_not_found"
             g0 = results[0]
             lat, lon = float(g0["latitude"]), float(g0["longitude"])
             name = str(g0.get("name") or city)
+            tz_offset = g0.get("utc_offset_seconds")
     except httpx.HTTPStatusError as e:
         logger.warning("Meteostat(RapidAPI) geocode HTTP error: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=e.response.status_code), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=e.response.status_code)),
+            "provider_error",
+        )
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
         logger.warning("Meteostat(RapidAPI) geocode failed: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=str(e)[:80]), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=str(e)[:80])),
+            "provider_error",
+        )
 
     try:
         async with httpx.AsyncClient(timeout=25.0, headers=headers) as client:
@@ -568,10 +620,18 @@ async def _fetch_meteostat_rapidapi(
             nj = nr.json()
             stations = nj.get("data") or []
             if not stations:
-                return False, i18n.t("errors.weather_failed", detail="no stations nearby"), "provider_error"
+                return (
+                    False,
+                    WeatherPayload(i18n.t("errors.weather_failed", detail="no stations nearby")),
+                    "provider_error",
+                )
             station_id = str((stations[0] or {}).get("id") or "").strip()
             if not station_id:
-                return False, i18n.t("errors.weather_failed", detail="bad station id"), "provider_error"
+                return (
+                    False,
+                    WeatherPayload(i18n.t("errors.weather_failed", detail="bad station id")),
+                    "provider_error",
+                )
 
             end = _dt.date.today()
             start = end - _dt.timedelta(days=2)
@@ -589,12 +649,20 @@ async def _fetch_meteostat_rapidapi(
             hj = hr.json()
             rows = hj.get("data") or []
             if not rows:
-                return False, i18n.t("errors.weather_failed", detail="no hourly data"), "provider_error"
+                return (
+                    False,
+                    WeatherPayload(i18n.t("errors.weather_failed", detail="no hourly data")),
+                    "provider_error",
+                )
 
             last = rows[-1] or {}
             temp = last.get("temp")
             if temp is None:
-                return False, i18n.t("errors.weather_failed", detail="no temp"), "provider_error"
+                return (
+                    False,
+                    WeatherPayload(i18n.t("errors.weather_failed", detail="no temp")),
+                    "provider_error",
+                )
 
             hum = last.get("rhum") or 0.0
             prcp = last.get("prcp") or 0.0
@@ -604,10 +672,18 @@ async def _fetch_meteostat_rapidapi(
 
     except httpx.HTTPStatusError as e:
         logger.warning("Meteostat(RapidAPI) HTTP error: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=e.response.status_code), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=e.response.status_code)),
+            "provider_error",
+        )
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
         logger.warning("Meteostat(RapidAPI) request failed: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=str(e)[:80]), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=str(e)[:80])),
+            "provider_error",
+        )
 
     wind_ms = _meteostat_kmh_to_ms(float(wspd))
     pressure_hpa = float(pres) if pres is not None else None
@@ -615,19 +691,28 @@ async def _fetch_meteostat_rapidapi(
 
     tf = float(temp)
     t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
-    return True, _format_weather_line(
-        name,
-        t_str,
-        wmo_like,
-        float(hum),
-        float(wind_ms),
-        float(prcp),
-        pressure_hpa,
-        cfg.locale,
-    ), "provider_error"
+    return (
+        True,
+        WeatherPayload(
+            _format_weather_line(
+                name,
+                t_str,
+                wmo_like,
+                float(hum),
+                float(wind_ms),
+                float(prcp),
+                pressure_hpa,
+                cfg.locale,
+            ),
+            int(tz_offset) if tz_offset is not None else None,
+        ),
+        "provider_error",
+    )
 
 
-async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool, str, _ErrKind]:
+async def _fetch_open_meteo(
+    city: str, cfg: BotConfig, i18n: I18n
+) -> tuple[bool, WeatherPayload, _ErrKind]:
     lang = "ru" if cfg.locale == "ru" else "en"
     lang_geo = "ru" if lang == "ru" else "en"
     try:
@@ -640,7 +725,7 @@ async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool
             data = gr.json()
             results = data.get("results") or []
             if not results:
-                return False, i18n.t("errors.city_not_found"), "city_not_found"
+                return False, WeatherPayload(i18n.t("errors.city_not_found")), "city_not_found"
             g0 = results[0]
             lat, lon = float(g0["latitude"]), float(g0["longitude"])
             name = str(g0.get("name") or city)
@@ -663,7 +748,11 @@ async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool
             cur = wj.get("current") or {}
             temp = cur.get("temperature_2m")
             if temp is None:
-                return False, i18n.t("errors.weather_failed", detail="no current weather"), "provider_error"
+                return (
+                    False,
+                    WeatherPayload(i18n.t("errors.weather_failed", detail="no current weather")),
+                    "provider_error",
+                )
             wcode = int(cur.get("weather_code") or 0)
             hum = cur.get("relative_humidity_2m")
             wind_ms = cur.get("wind_speed_10m")
@@ -676,33 +765,49 @@ async def _fetch_open_meteo(city: str, cfg: BotConfig, i18n: I18n) -> tuple[bool
                 prec = 0.0
             p_msl = cur.get("pressure_msl")
             pressure_hpa = float(p_msl) if p_msl is not None else None
+            tz_offset = wj.get("utc_offset_seconds")
     except httpx.HTTPStatusError as e:
         logger.warning("Open-Meteo HTTP error: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=e.response.status_code), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=e.response.status_code)),
+            "provider_error",
+        )
     except (httpx.RequestError, KeyError, ValueError, TypeError) as e:
         logger.warning("Open-Meteo request failed: %r", e)
-        return False, i18n.t("errors.weather_failed", detail=str(e)[:80]), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=str(e)[:80])),
+            "provider_error",
+        )
 
     tf = float(temp)
     t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
-    return True, _format_weather_line(
-        name,
-        t_str,
-        wcode,
-        float(hum),
-        float(wind_ms),
-        float(prec),
-        pressure_hpa,
-        cfg.locale,
-    ), "provider_error"
+    return (
+        True,
+        WeatherPayload(
+            _format_weather_line(
+                name,
+                t_str,
+                wcode,
+                float(hum),
+                float(wind_ms),
+                float(prec),
+                pressure_hpa,
+                cfg.locale,
+            ),
+            int(tz_offset) if tz_offset is not None else None,
+        ),
+        "provider_error",
+    )
 
 
 async def _fetch_open_weather_map(
     city: str, cfg: BotConfig, i18n: I18n
-) -> tuple[bool, str, _ErrKind]:
+) -> tuple[bool, WeatherPayload, _ErrKind]:
     key = (os.environ.get("WEATHER_API_KEY") or "").strip()
     if not key:
-        return False, i18n.t("errors.weather_not_configured"), "not_configured"
+        return False, WeatherPayload(i18n.t("errors.weather_not_configured")), "not_configured"
 
     lang = "ru" if cfg.locale == "ru" else "en"
     params_geo = {"q": city, "limit": 1, "appid": key}
@@ -713,7 +818,7 @@ async def _fetch_open_weather_map(
             gr.raise_for_status()
             geo = gr.json()
             if not geo:
-                return False, i18n.t("errors.city_not_found"), "city_not_found"
+                return False, WeatherPayload(i18n.t("errors.city_not_found")), "city_not_found"
             lat, lon = geo[0]["lat"], geo[0]["lon"]
             name = geo[0].get("local_names", {}).get(lang) or geo[0].get("name", city)
 
@@ -729,10 +834,18 @@ async def _fetch_open_weather_map(
             data = wr.json()
     except httpx.HTTPStatusError as e:
         logger.warning("Weather HTTP error: %s", e)
-        return False, i18n.t("errors.weather_failed", detail=e.response.status_code), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=e.response.status_code)),
+            "provider_error",
+        )
     except (httpx.RequestError, KeyError, IndexError, ValueError) as e:
         logger.warning("Weather request failed: %s", e)
-        return False, i18n.t("errors.weather_failed", detail=str(e)[:80]), "provider_error"
+        return (
+            False,
+            WeatherPayload(i18n.t("errors.weather_failed", detail=str(e)[:80])),
+            "provider_error",
+        )
 
     temp = data["main"]["temp"]
     hum = float(data["main"].get("humidity", 0))
@@ -748,11 +861,17 @@ async def _fetch_open_weather_map(
 
     raw_p = data["main"].get("pressure")
     pressure_hpa = float(raw_p) if raw_p is not None else None
+    tz_offset = data.get("timezone")
 
     t_str = f"{temp:.0f}" if abs(temp - round(temp)) < 0.05 else f"{temp:.1f}"
-    return True, _format_weather_line(
-        name, t_str, wmo_like, hum, wind_ms, prec, pressure_hpa, cfg.locale
-    ), "provider_error"
+    return (
+        True,
+        WeatherPayload(
+            _format_weather_line(name, t_str, wmo_like, hum, wind_ms, prec, pressure_hpa, cfg.locale),
+            int(tz_offset) if tz_offset is not None else None,
+        ),
+        "provider_error",
+    )
 
 
 def _owm_id_to_wmo_bucket(owm_id: int) -> int:
