@@ -29,6 +29,10 @@ class BotConfig:
     reply_delay_sec: float
     advert_interval_hours: float
     advert_flood: bool
+    node_advert_retention_days: float
+    node_advert_max_stored: int
+    node_advert_store_path: Path
+    node_key_preview_bytes: int
     # Private replies: wait for delivery ACK, else retry (separate limits).
     dm_delivery_wait_sec: float
     dm_delivery_max_attempts: int
@@ -49,6 +53,7 @@ class BotConfig:
         blacklist = raw.get("blacklist") or {}
         admins = raw.get("admins") or {}
         advert = raw.get("advert") or {}
+        nodes = raw.get("nodes") or {}
         dm_delivery = raw.get("dm_delivery") or {}
         poll = raw.get("poll") or {}
         commands = raw.get("commands") or {}
@@ -59,6 +64,8 @@ class BotConfig:
 
         bl_path = blacklist.get("path", "data/blacklist.json")
         blacklist_path = (base_dir / bl_path).resolve()
+        node_store_path_raw = str(nodes.get("store_path", "data/node_adverts.json") or "data/node_adverts.json")
+        node_advert_store_path = (base_dir / node_store_path_raw).resolve()
 
         keys = [str(k).strip().lower() for k in (admins.get("public_keys") or []) if str(k).strip()]
 
@@ -93,6 +100,30 @@ class BotConfig:
         # Cap to avoid accidental huge values (e.g. typo); ~1 year
         if advert_interval_hours > 8760.0:
             advert_interval_hours = 8760.0
+        try:
+            node_advert_retention_days = float(nodes.get("advert_retention_days", 7) or 7)
+        except (TypeError, ValueError):
+            node_advert_retention_days = 7.0
+        if node_advert_retention_days < 0:
+            node_advert_retention_days = 0.0
+        if node_advert_retention_days > 3650.0:
+            node_advert_retention_days = 3650.0
+        try:
+            node_advert_max_stored = int(nodes.get("max_stored", 5000) or 5000)
+        except (TypeError, ValueError):
+            node_advert_max_stored = 5000
+        if node_advert_max_stored < 1:
+            node_advert_max_stored = 1
+        if node_advert_max_stored > 1_000_000:
+            node_advert_max_stored = 1_000_000
+        try:
+            node_key_preview_bytes = int(nodes.get("key_preview_bytes", 2) or 2)
+        except (TypeError, ValueError):
+            node_key_preview_bytes = 2
+        if node_key_preview_bytes < 1:
+            node_key_preview_bytes = 1
+        if node_key_preview_bytes > 4:
+            node_key_preview_bytes = 4
 
         try:
             dm_delivery_wait_sec = float(dm_delivery.get("wait_sec", 10) or 10)
@@ -158,6 +189,8 @@ class BotConfig:
         #     aliases: []
         #   msg:
         #     aliases: []
+        #   node:
+        #     aliases: []
         def _aliases_for(cmd_name: str) -> list[str]:
             bag = commands.get(cmd_name) or {}
             raw_aliases = bag.get("aliases") or []
@@ -179,6 +212,7 @@ class BotConfig:
             "stop": _aliases_for("stop"),
             "channels": _aliases_for("channels"),
             "msg": _aliases_for("msg"),
+            "node": _aliases_for("node"),
         }
 
         return cls(
@@ -201,6 +235,10 @@ class BotConfig:
             reply_delay_sec=reply_delay_sec,
             advert_interval_hours=advert_interval_hours,
             advert_flood=bool(advert.get("flood", False)),
+            node_advert_retention_days=node_advert_retention_days,
+            node_advert_max_stored=node_advert_max_stored,
+            node_advert_store_path=node_advert_store_path,
+            node_key_preview_bytes=node_key_preview_bytes,
             dm_delivery_wait_sec=dm_delivery_wait_sec,
             dm_delivery_max_attempts=dm_delivery_max_attempts,
             admin_public_keys=keys,

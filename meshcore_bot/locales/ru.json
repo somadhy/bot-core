@@ -9,7 +9,11 @@
     "internal": "Ошибка бота."
   },
   "help": {
-    "body": "Команды: погода [город] | weather [city] | время [город] | time [city] | помощь | help"
+    "body": "Команды: погода [город] | weather [city] | время [город] | time [city] | узел [hex] | node [hex] | помощь | help"
+  },
+  "node": {
+    "bad_prefix": "Укажите hex-префикс ключа (минимум {min_hex} символа, это 1 байт).",
+    "not_found": "Узлы по префиксу {prefix} не найдены."
   },
   "admin": {
     "shutdown_ok": "Останавливаюсь.",

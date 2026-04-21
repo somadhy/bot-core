@@ -9,7 +9,11 @@
     "internal": "Bot error."
   },
   "help": {
-    "body": "Commands: weather [city] | погода [город] | time [city] | время [город] | help | помощь"
+    "body": "Commands: weather [city] | погода [город] | time [city] | время [город] | node [hex] | узел [hex] | help | помощь"
+  },
+  "node": {
+    "bad_prefix": "Provide a key hex prefix (at least {min_hex} symbols, i.e. 1 byte).",
+    "not_found": "No nodes found for prefix {prefix}."
   },
   "admin": {
     "shutdown_ok": "Shutting down.",

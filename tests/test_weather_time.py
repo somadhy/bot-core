@@ -4,6 +4,7 @@ import datetime as dt
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 # service.py imports meshcore at module import time; provide a lightweight stub
@@ -75,6 +76,11 @@ class RouterTimeTests(unittest.TestCase):
         self.assertEqual(parsed.kind, CmdKind.TIME)
         self.assertEqual(parsed.arg, "London")
 
+    def test_parse_incoming_node_base_alias(self) -> None:
+        parsed = parse_incoming("узел 12ab")
+        self.assertEqual(parsed.kind, CmdKind.NODE)
+        self.assertEqual(parsed.arg, "12ab")
+
 
 class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_contact_time_uses_default_city_when_arg_missing(self) -> None:
@@ -87,6 +93,9 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             reply_delay_sec=0,
             dm_delivery_wait_sec=0,
             dm_delivery_max_attempts=1,
+            node_advert_store_path=Path("/tmp/test-node-adverts.json"),
+            node_advert_retention_days=7,
+            node_advert_max_stored=5000,
         )
         mesh = types.SimpleNamespace(get_contact_by_key_prefix=lambda _p: None)
         blacklist = types.SimpleNamespace(is_blocked=lambda *_a, **_k: False)

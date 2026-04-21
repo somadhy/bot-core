@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import re
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,7 @@ from meshcore_bot.blacklist import Blacklist
 from meshcore_bot.channel_info import fetch_channel_table
 from meshcore_bot.commands.router import CmdKind, parse_incoming
 from meshcore_bot.commands.weather_cmd import WeatherPayload, fetch_weather_payload
+from meshcore_bot.node_advert_store import NodeAdvertRecord, NodeAdvertStore
 from meshcore_bot.textutil import clip_utf8_bytes, pack_lines_utf8_chunks
 
 if TYPE_CHECKING:
@@ -29,8 +31,13 @@ MAX_MESSAGE_LEN = 220
 WEATHER_REPLY_MAX_BYTES = 140
 # Admin DM channel list: each message with @[nick] fits in this UTF-8 byte budget.
 CHANNELS_REPLY_MAX_BYTES = 150
+NODE_REPLY_MAX_BYTES = 140
 # Minimum gap between chunks of a long list when reply_delay_sec is 0.
 _CHANNELS_PART_MIN_GAP_SEC = 0.35
+_NODE_PART_MIN_GAP_SEC = 0.35
+_NODE_MIN_PREFIX_HEX_LEN = 2
+_HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
+_REPEATER_TYPE_MARKERS = ("repeater", "relay", "router", "2")
 
 
 def _channel_idx_from_event(event: Event) -> int:
@@ -136,6 +143,37 @@ def _time_line(city: str, tz_offset_seconds: int | None) -> str:
     return f"{city_show}\n🕒{local_hhmm}"
 
 
+def _key_preview(pubkey_hex: str, key_bytes: int) -> str:
+    n = max(1, min(4, int(key_bytes))) * 2
+    return (pubkey_hex or "").lower()[:n]
+
+
+def _node_type_emoji(node_type: str) -> str:
+    t = (node_type or "").strip().lower()
+    if t in ("1", "chat") or "chat" in t:
+        return "👤"
+    if t in ("2", "repeater") or "repeater" in t or "router" in t or "relay" in t:
+        return "📡"
+    if t in ("3", "room") or "room" in t:
+        return "🏠"
+    if t in ("4", "sensor") or "sensor" in t:
+        return "📟"
+    return "📦"
+
+
+def _node_last_advert_ddmm(ts: float) -> str:
+    if ts <= 0:
+        return "--.--"
+    return _dt.datetime.fromtimestamp(ts).strftime("%d-%m")
+
+
+def _format_node_line(rec: NodeAdvertRecord, key_preview_bytes: int) -> str:
+    key = _key_preview(rec.public_key, key_preview_bytes) or "?"
+    emoji = _node_type_emoji(rec.node_type)
+    name = rec.node_name or "?"
+    return f"🔑{key} {emoji} {name}"
+
+
 class BotService:
     def __init__(
         self,
@@ -150,11 +188,66 @@ class BotService:
         self._i18n = i18n
         self._blacklist = blacklist
         self._shutdown = shutdown
+        self._node_store = NodeAdvertStore(
+            cfg.node_advert_store_path,
+            cfg.node_advert_retention_days,
+            cfg.node_advert_max_stored,
+        )
+        self._node_store.load()
 
     def attach(self) -> None:
         self._mesh.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
         if self._cfg.dm_enabled:
             self._mesh.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_msg)
+
+    async def refresh_node_store_from_contacts(self) -> int:
+        rows: list[dict[str, Any]] = []
+        # meshcore API differs by version: some builds expose mesh.get_contacts(),
+        # others only mesh.commands.get_contacts() + internal _contacts cache.
+        direct = getattr(self._mesh, "get_contacts", None)
+        if callable(direct):
+            try:
+                contacts = direct() or []
+                rows = [x for x in contacts if isinstance(x, dict)]
+            except Exception:
+                logger.exception("mesh.get_contacts() failed while syncing node store")
+        if not rows:
+            try:
+                ev = await self._mesh.commands.get_contacts()
+                payload = ev.payload if isinstance(ev.payload, dict) else {}
+                data = payload.get("contacts", payload)
+                if isinstance(data, list):
+                    rows = [x for x in data if isinstance(x, dict)]
+            except Exception:
+                logger.exception("mesh.commands.get_contacts() failed while syncing node store")
+        if not rows:
+            cached = getattr(self._mesh, "_contacts", None)
+            if isinstance(cached, list):
+                rows = [x for x in cached if isinstance(x, dict)]
+            elif isinstance(cached, dict):
+                rows = [x for x in cached.values() if isinstance(x, dict)]
+        type_counts: dict[str, int] = {}
+        for row in rows:
+            t = str(row.get("type") or row.get("node_type") or row.get("kind") or "unknown").strip().lower()
+            type_counts[t] = type_counts.get(t, 0) + 1
+        changed = self._node_store.upsert_contacts_snapshot(rows)
+        self._node_store.save()
+        logger.info(
+            "node store contact snapshot: total=%s stored=%s types=%s",
+            len(rows),
+            changed,
+            type_counts,
+        )
+        if rows and not any(
+            any(marker in node_type for marker in _REPEATER_TYPE_MARKERS)
+            for node_type in type_counts
+        ):
+            logger.warning(
+                "contact snapshot has no repeater-like nodes (markers=%s); types=%s",
+                _REPEATER_TYPE_MARKERS,
+                type_counts,
+            )
+        return changed
 
     async def _send_chan(
         self, channel_idx: int, text: str, *, kind: str | None = None
@@ -320,6 +413,10 @@ class BotService:
             await self._send_chan(ch, out, kind="help")
             return
 
+        if parsed.kind == CmdKind.NODE:
+            await self._handle_node_query_channel(ch, nick, parsed.arg)
+            return
+
         if parsed.kind == CmdKind.WEATHER:
             city = (parsed.arg or "").strip() or (self._cfg.weather_default_city or "").strip()
             if not city:
@@ -355,6 +452,13 @@ class BotService:
         contact = (
             self._mesh.get_contact_by_key_prefix(pubkey_prefix) if pubkey_prefix else None
         )
+        if isinstance(contact, dict):
+            try:
+                if self._node_store.upsert_contact(contact):
+                    self._node_store.purge_and_trim()
+                    self._node_store.save()
+            except Exception:
+                logger.exception("failed to update node advert store from DM contact")
         public_key = (contact or {}).get("public_key") if contact else None
 
         if self._blacklist.is_blocked(public_key, pubkey_prefix):
@@ -441,6 +545,10 @@ class BotService:
                 )
             return
 
+        if parsed.kind == CmdKind.NODE:
+            await self._handle_node_query_dm(dst, nick, parsed.arg)
+            return
+
         if parsed.kind == CmdKind.CHANNELS:
             if not is_admin(public_key, self._cfg.admin_public_keys):
                 return
@@ -497,3 +605,63 @@ class BotService:
             payload = await fetch_weather_payload(city, self._cfg, self._i18n, use_cache=False)
             line = _time_line(city, payload.tz_offset_seconds)
             await self._send_dm(dst, _weather_reply(nick, line), kind="time")
+
+    async def _send_node_parts_dm(self, dst: Any, nick: str, lines: list[str]) -> None:
+        body_budget = max(1, _dm_mention_body_budget(nick, NODE_REPLY_MAX_BYTES))
+        parts = pack_lines_utf8_chunks(lines, body_budget)
+        between = max(self._cfg.reply_delay_sec, _NODE_PART_MIN_GAP_SEC)
+        for i, body in enumerate(parts):
+            delay_sec = between if i > 0 else None
+            full = _reply_mention(nick, body)
+            if len(full.encode("utf-8")) > NODE_REPLY_MAX_BYTES:
+                full = clip_utf8_bytes(full, NODE_REPLY_MAX_BYTES)
+            await self._send_dm(dst, full, kind="node", delay_sec=delay_sec)
+
+    async def _send_node_parts_channel(self, channel_idx: int, nick: str, lines: list[str]) -> None:
+        body_budget = max(1, NODE_REPLY_MAX_BYTES - len(_reply_mention(nick, "").encode("utf-8")))
+        parts = pack_lines_utf8_chunks(lines, body_budget)
+        between = max(self._cfg.reply_delay_sec, _NODE_PART_MIN_GAP_SEC)
+        for i, body in enumerate(parts):
+            if i > 0 and between > 0:
+                await asyncio.sleep(between)
+            full = _reply_mention(nick, body)
+            if len(full.encode("utf-8")) > NODE_REPLY_MAX_BYTES:
+                full = clip_utf8_bytes(full, NODE_REPLY_MAX_BYTES)
+            await self._send_chan(channel_idx, full, kind="node")
+
+    def _validate_node_prefix(self, arg: str) -> str | None:
+        p = (arg or "").strip().lower()
+        if len(p) < _NODE_MIN_PREFIX_HEX_LEN:
+            return None
+        if not _HEX_RE.match(p):
+            return None
+        return p
+
+    def _node_query_lines(self, key_prefix: str) -> list[str]:
+        self._node_store.purge_and_trim()
+        rows = self._node_store.find_by_prefix(key_prefix)
+        if not rows:
+            return [self._i18n.t("node.not_found", prefix=key_prefix)]
+        rows = sorted(rows, key=lambda x: ((x.node_name or "").casefold(), x.public_key))
+        lines = [_format_node_line(x, self._cfg.node_key_preview_bytes) for x in rows]
+        if len(lines) <= 1:
+            return lines
+        return [f"{i}: {line}" for i, line in enumerate(lines, start=1)]
+
+    async def _handle_node_query_channel(self, channel_idx: int, nick: str, arg: str) -> None:
+        prefix = self._validate_node_prefix(arg)
+        if prefix is None:
+            msg = self._i18n.t("node.bad_prefix", min_hex=_NODE_MIN_PREFIX_HEX_LEN)
+            await self._send_chan(channel_idx, _reply_mention(nick, msg), kind="node")
+            return
+        lines = self._node_query_lines(prefix)
+        await self._send_node_parts_channel(channel_idx, nick, lines)
+
+    async def _handle_node_query_dm(self, dst: Any, nick: str, arg: str) -> None:
+        prefix = self._validate_node_prefix(arg)
+        if prefix is None:
+            msg = self._i18n.t("node.bad_prefix", min_hex=_NODE_MIN_PREFIX_HEX_LEN)
+            await self._send_dm(dst, _reply_mention(nick, msg), kind="node")
+            return
+        lines = self._node_query_lines(prefix)
+        await self._send_node_parts_dm(dst, nick, lines)

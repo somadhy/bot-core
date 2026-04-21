@@ -32,6 +32,41 @@ if os.environ.get("MESHCORE_BOT_DEBUG", "").lower() in ("1", "true", "yes"):
 logger = logging.getLogger("meshcore_bot")
 
 
+async def _ensure_companion_contacts_persistence(mesh: MeshCore) -> None:
+    """Try to enable companion contact autosave/rotation if API is available."""
+    commands = getattr(mesh, "commands", None)
+    if commands is None:
+        return
+    # Different meshcore versions may expose different names.
+    toggles = (
+        ("enable_contacts_autosave", (), {}),
+        ("set_contacts_autosave", (True,), {}),
+        ("set_contact_autosave", (True,), {}),
+    )
+    rotation_calls = (
+        ("enable_contacts_rotation", (), {}),
+        ("set_contacts_rotation", (True,), {}),
+    )
+    for name, args, kwargs in toggles:
+        fn = getattr(commands, name, None)
+        if callable(fn):
+            try:
+                await fn(*args, **kwargs)
+                logger.info("Companion contacts autosave enabled via %s()", name)
+                break
+            except Exception:
+                logger.warning("Could not enable contacts autosave via %s()", name, exc_info=True)
+    for name, args, kwargs in rotation_calls:
+        fn = getattr(commands, name, None)
+        if callable(fn):
+            try:
+                await fn(*args, **kwargs)
+                logger.info("Companion contacts rotation enabled via %s()", name)
+                break
+            except Exception:
+                logger.warning("Could not enable contacts rotation via %s()", name, exc_info=True)
+
+
 async def async_main() -> int:
     try:
         cfg = load_config()
@@ -50,6 +85,7 @@ async def async_main() -> int:
         return 1
 
     try:
+        await _ensure_companion_contacts_persistence(mesh)
         cr = await mesh.commands.get_contacts()
         if cr.type == EventType.ERROR:
             logger.warning("get_contacts: %s", cr.payload)
@@ -58,6 +94,11 @@ async def async_main() -> int:
 
     # Subscribe before polling so CHANNEL_MSG_RECV handlers are registered first.
     svc = BotService(cfg, mesh, i18n, blacklist, shutdown)
+    try:
+        refreshed = await svc.refresh_node_store_from_contacts()
+        logger.info("Node advert store synced from contacts: %s rows", refreshed)
+    except Exception:
+        logger.exception("initial node advert store sync failed")
     svc.attach()
     # Continuous get_msg — see message_poll.py (start_auto_message_fetching alone can stall).
     poll_task = asyncio.create_task(

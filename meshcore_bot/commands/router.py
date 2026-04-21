@@ -18,6 +18,7 @@ class CmdKind(Enum):
     STOP = auto()
     CHANNELS = auto()
     MSG = auto()
+    NODE = auto()
 
 
 @dataclass
@@ -69,6 +70,7 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
         CmdKind.STOP: {"stop", "стоп"},
         CmdKind.CHANNELS: {"channels", "каналы"},
         CmdKind.MSG: {"msg", "мсг"},
+        CmdKind.NODE: {"node", "узел"},
     }
 
     if cfg is not None:
@@ -85,6 +87,7 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
         stop_names = _extend(CmdKind.STOP, "stop")
         channels_names = _extend(CmdKind.CHANNELS, "channels")
         msg_names = _extend(CmdKind.MSG, "msg")
+        node_names = _extend(CmdKind.NODE, "node")
     else:
         weather_names = base_aliases[CmdKind.WEATHER]
         time_names = base_aliases[CmdKind.TIME]
@@ -92,6 +95,7 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
         stop_names = base_aliases[CmdKind.STOP]
         channels_names = base_aliases[CmdKind.CHANNELS]
         msg_names = base_aliases[CmdKind.MSG]
+        node_names = base_aliases[CmdKind.NODE]
 
     if name in weather_names:
         return ParsedCommand(CmdKind.WEATHER, arg)
@@ -105,6 +109,8 @@ def _parse_command_tokens_with_cfg(s: str, cfg: "BotConfig | None") -> ParsedCom
         return ParsedCommand(CmdKind.CHANNELS)
     if name in msg_names:
         return ParsedCommand(CmdKind.MSG, arg)
+    if name in node_names:
+        return ParsedCommand(CmdKind.NODE, arg)
     return ParsedCommand(CmdKind.NONE)
 
 

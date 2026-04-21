@@ -33,6 +33,16 @@ advert:
   interval_hours: 0
   flood: true   # true — широкий «flood»-адверт (см. прошивку / meshcore)
 
+nodes:
+  # Срок хранения записей узлов (в днях), полученных из snapshots контактов companion.
+  advert_retention_days: 7
+  # Максимум хранимых узлов (при превышении остаются самые свежие).
+  max_stored: 5000
+  # Сколько первых байт ключа показывать в команде node/узел (1..4).
+  key_preview_bytes: 2
+  # Путь к JSON-хранилищу узлов.
+  store_path: data/node_adverts.json
+
 poll:
   # Keepalive (чтобы USB/companion/радио не "засыпали" при простое).
   # 0 — выключить. Можно переопределить env-переменными:
@@ -73,6 +83,7 @@ commands:
   #   stop / стоп
   #   channels / каналы  (только ЛС админа — список channels.enabled_indices)
   #   msg / мсг  (только ЛС админа — «msg индекс:текст» в канал от лица бота)
+  #   node / узел [hex-prefix]  (поиск узлов по началу публичного ключа)
   # Здесь можно добавить короткие синонимы, например `wz` для погоды.
   weather:
     aliases: []
@@ -85,4 +96,6 @@ commands:
   channels:
     aliases: []
   msg:
+    aliases: []
+  node:
     aliases: []
