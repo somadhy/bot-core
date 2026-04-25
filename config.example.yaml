@@ -27,6 +27,16 @@ dm_delivery:
   wait_sec: 10
   max_attempts: 2
 
+# Ответы в канал: ждать повторы в RX_LOG_DATA; при недоборе — повторять отправку.
+channel_delivery:
+  # Окно ожидания после каждой отправки.
+  rx_wait_sec: 10
+  # Минимум повторов GRP_TXT в том же канале (Android-подобный heard).
+  # Сопоставление канала: chan_hash -> chan_name -> channel_idx, с дедупом по pkt_hash.
+  min_rx_repeats: 1
+  # Максимум попыток отправки сообщения в канал.
+  max_attempts: 3
+
 # Периодический адверт узла (meshcore send_advert). 0 — выключено.
 # Первый адверт после первого полного интервала с момента старта бота.
 advert:

@@ -168,6 +168,9 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             reply_delay_sec=0,
             dm_delivery_wait_sec=0,
             dm_delivery_max_attempts=1,
+            channel_delivery_wait_sec=10,
+            channel_delivery_min_rx_repeats=1,
+            channel_delivery_max_attempts=3,
             node_advert_store_path=Path("/tmp/test-node-adverts.json"),
             node_advert_retention_days=7,
             node_advert_max_stored=5000,
@@ -206,6 +209,9 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             reply_delay_sec=0,
             dm_delivery_wait_sec=0,
             dm_delivery_max_attempts=1,
+            channel_delivery_wait_sec=10,
+            channel_delivery_min_rx_repeats=1,
+            channel_delivery_max_attempts=3,
             node_advert_store_path=Path("/tmp/test-node-adverts.json"),
             node_advert_retention_days=7,
             node_advert_max_stored=5000,
@@ -242,6 +248,9 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             reply_delay_sec=0,
             dm_delivery_wait_sec=0,
             dm_delivery_max_attempts=1,
+            channel_delivery_wait_sec=10,
+            channel_delivery_min_rx_repeats=1,
+            channel_delivery_max_attempts=3,
             node_advert_store_path=Path("/tmp/test-node-adverts.json"),
             node_advert_retention_days=7,
             node_advert_max_stored=5000,
@@ -326,6 +335,114 @@ class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
             await weather_cmd.fetch_weather_payload("Rome", cfg, i18n, use_cache=False)
 
         self.assertEqual(mocked_fetch.await_count, 2)
+
+
+class ChannelDeliveryRetryTests(unittest.IsolatedAsyncioTestCase):
+    def _make_service(self) -> service.BotService:
+        cfg = types.SimpleNamespace(
+            dm_enabled=True,
+            weather_default_city="Moscow",
+            channels_enabled=[0],
+            admin_public_keys=[],
+            admin_channel_indices=[],
+            reply_delay_sec=0,
+            dm_delivery_wait_sec=0,
+            dm_delivery_max_attempts=1,
+            channel_delivery_wait_sec=0,
+            channel_delivery_min_rx_repeats=1,
+            channel_delivery_max_attempts=3,
+            node_advert_store_path=Path("/tmp/test-node-adverts.json"),
+            node_advert_retention_days=7,
+            node_advert_max_stored=5000,
+        )
+        mesh = types.SimpleNamespace(
+            get_contact_by_key_prefix=lambda _p: None,
+            commands=types.SimpleNamespace(send_chan_msg=AsyncMock()),
+        )
+        blacklist = types.SimpleNamespace(is_blocked=lambda *_a, **_k: False)
+        return service.BotService(
+            cfg=cfg,
+            mesh=mesh,
+            i18n=_I18nStub(),
+            blacklist=blacklist,
+            shutdown=types.SimpleNamespace(set=lambda: None),
+        )
+
+    async def test_send_chan_succeeds_on_first_attempt_when_threshold_met(self) -> None:
+        svc = self._make_service()
+        svc._mesh.commands.send_chan_msg.return_value = types.SimpleNamespace(type="OK", payload={})
+        svc._resolve_channel_name = AsyncMock(return_value="👽")  # type: ignore[method-assign]
+        svc._count_heard_repeats_since = AsyncMock(return_value=1)  # type: ignore[method-assign]
+        with patch.object(service, "EventType", types.SimpleNamespace(ERROR="ERROR")):
+            ok = await svc._send_chan(0, "hello", kind="test")
+        self.assertTrue(ok)
+        self.assertEqual(svc._mesh.commands.send_chan_msg.await_count, 1)
+
+    async def test_send_chan_retries_until_threshold_met(self) -> None:
+        svc = self._make_service()
+        svc._mesh.commands.send_chan_msg.return_value = types.SimpleNamespace(type="OK", payload={})
+        svc._resolve_channel_name = AsyncMock(return_value="👽")  # type: ignore[method-assign]
+        svc._count_heard_repeats_since = AsyncMock(side_effect=[0, 1])  # type: ignore[method-assign]
+        with patch.object(service, "EventType", types.SimpleNamespace(ERROR="ERROR")):
+            ok = await svc._send_chan(0, "hello", kind="test")
+        self.assertTrue(ok)
+        self.assertEqual(svc._mesh.commands.send_chan_msg.await_count, 2)
+
+    async def test_send_chan_fails_when_threshold_never_met(self) -> None:
+        svc = self._make_service()
+        svc._mesh.commands.send_chan_msg.return_value = types.SimpleNamespace(type="OK", payload={})
+        svc._resolve_channel_name = AsyncMock(return_value="👽")  # type: ignore[method-assign]
+        svc._count_heard_repeats_since = AsyncMock(return_value=0)  # type: ignore[method-assign]
+        with patch.object(service, "EventType", types.SimpleNamespace(ERROR="ERROR")):
+            ok = await svc._send_chan(0, "hello", kind="test")
+        self.assertFalse(ok)
+        self.assertEqual(svc._mesh.commands.send_chan_msg.await_count, 3)
+
+    async def test_send_chan_accepts_chan_hash_fallback_for_grp_txt(self) -> None:
+        svc = self._make_service()
+        svc._mesh.commands.send_chan_msg.return_value = types.SimpleNamespace(
+            type="OK", payload={"chan_hash": "ea"}
+        )
+        svc._resolve_channel_name = AsyncMock(return_value="👽")  # type: ignore[method-assign]
+        svc._count_heard_repeats_since = AsyncMock(return_value=1)  # type: ignore[method-assign]
+        with patch.object(service, "EventType", types.SimpleNamespace(ERROR="ERROR")):
+            ok = await svc._send_chan(0, "hello", kind="test")
+        self.assertTrue(ok)
+        self.assertEqual(svc._mesh.commands.send_chan_msg.await_count, 1)
+
+    async def test_rx_log_uses_meshcore_decoder_for_grp_txt_payload(self) -> None:
+        svc = self._make_service()
+        svc._mesh.decode_rx_log_data = AsyncMock(return_value={"channel_idx": 0, "text": "hello"})  # type: ignore[attr-defined]
+        event = types.SimpleNamespace(
+            payload={
+                "payload_typename": "GRP_TXT",
+                "chan_hash": "1f",
+                "pkt_payload": b"\x00\x01",
+                "crypted": "abcd",
+            },
+            attributes={},
+        )
+        await svc._on_rx_log_data(event)
+        count = await svc._count_heard_repeats_since(
+            0,
+            0,
+            sent_chan_hash="1f",
+            sent_chan_name="",
+        )
+        self.assertEqual(count, 1)
+
+    async def test_chan_hash_count_is_deduplicated_by_pkt_hash(self) -> None:
+        svc = self._make_service()
+        await svc._register_rx_log_group_event(3, "ea", "👽", "12345")
+        await svc._register_rx_log_group_event(3, "ea", "👽", "12345")
+        await svc._register_rx_log_group_event(3, "ea", "👽", "99999")
+        count = await svc._count_heard_repeats_since(
+            3,
+            0,
+            sent_chan_hash="ea",
+            sent_chan_name="👽",
+        )
+        self.assertEqual(count, 2)
 
 
 if __name__ == "__main__":

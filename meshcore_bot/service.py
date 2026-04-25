@@ -7,6 +7,7 @@ import datetime as _dt
 import os
 import re
 import logging
+import inspect
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -490,6 +491,169 @@ class BotService:
         self._latest_signal_quality_str = _UNKNOWN_SIGNAL_QUALITY
         self._latest_hash_len: int | None = None
         self._latest_path_nodes: list[str] | None = None
+        self._rx_log_grp_events: list[tuple[float, int, str, str, str]] = []
+        self._rx_log_lock = asyncio.Lock()
+        self._channel_name_cache: dict[int, str] = {}
+
+    def _prune_rx_log_matches_locked(self, now_monotonic: float) -> None:
+        max_wait = max(
+            0.0,
+            float(getattr(self._cfg, "channel_delivery_wait_sec", 10.0) or 10.0),
+        )
+        cutoff = now_monotonic - max_wait - 2.0
+        self._rx_log_grp_events = [x for x in self._rx_log_grp_events if x[0] >= cutoff]
+
+    async def _register_rx_log_group_event(
+        self,
+        channel_idx: int,
+        chan_hash: str,
+        chan_name: str,
+        pkt_hash: str,
+    ) -> None:
+        h = str(chan_hash or "").strip().lower()
+        name = str(chan_name or "").strip()
+        event_key = str(pkt_hash or "").strip().lower()
+        if not event_key:
+            event_key = f"t{int(time.monotonic() * 1000)}"
+        if channel_idx < 0 and not h and not name:
+            return
+        now_mono = time.monotonic()
+        async with self._rx_log_lock:
+            self._prune_rx_log_matches_locked(now_mono)
+            self._rx_log_grp_events.append((now_mono, channel_idx, h, name, event_key))
+
+    async def _resolve_channel_name(self, channel_idx: int) -> str:
+        if channel_idx in self._channel_name_cache:
+            return self._channel_name_cache[channel_idx]
+        try:
+            table = await fetch_channel_table(self._mesh, self._cfg.channels_enabled)
+        except Exception:
+            logger.exception("failed to resolve channel names for heard correlation")
+            return ""
+        self._channel_name_cache.update(table)
+        return str(self._channel_name_cache.get(channel_idx) or "").strip()
+
+    async def _count_heard_repeats_since(
+        self,
+        channel_idx: int,
+        since_monotonic: float,
+        *,
+        sent_chan_hash: str,
+        sent_chan_name: str,
+    ) -> int:
+        sent_hash = str(sent_chan_hash or "").strip().lower()
+        sent_name = str(sent_chan_name or "").strip().casefold()
+        async with self._rx_log_lock:
+            self._prune_rx_log_matches_locked(time.monotonic())
+            matched: set[str] = set()
+            for ts, rx_idx, rx_hash, rx_name, event_key in self._rx_log_grp_events:
+                if ts < since_monotonic:
+                    continue
+                if sent_hash and rx_hash and rx_hash == sent_hash:
+                    matched.add(event_key)
+                    continue
+                if sent_name and rx_name and rx_name.casefold() == sent_name:
+                    matched.add(event_key)
+                    continue
+                if rx_idx >= 0 and rx_idx == channel_idx:
+                    matched.add(event_key)
+            return len(matched)
+
+    @staticmethod
+    def _pkt_hash_from_bag(bag: dict[str, Any] | None) -> str:
+        if not isinstance(bag, dict):
+            return ""
+        raw = bag.get("pkt_hash")
+        if raw is None:
+            raw = bag.get("packet_hash")
+        if raw is None:
+            return ""
+        return str(raw).strip().lower()
+
+    @staticmethod
+    def _chan_hash_from_bag(bag: dict[str, Any] | None) -> str:
+        if not isinstance(bag, dict):
+            return ""
+        raw = bag.get("chan_hash")
+        if raw is None:
+            raw = bag.get("channel_hash")
+        if raw is None:
+            return ""
+        return str(raw).strip().lower()
+
+    @staticmethod
+    def _extract_text_and_channel_from_bag(bag: dict[str, Any] | None) -> tuple[int, str] | None:
+        if not isinstance(bag, dict):
+            return None
+        ch_raw = None
+        for key in ("channel_idx", "chan", "channel"):
+            if key in bag and bag.get(key) is not None:
+                ch_raw = bag.get(key)
+                break
+        text_raw = None
+        for key in ("text", "msg", "message"):
+            if key in bag and bag.get(key) is not None:
+                text_raw = bag.get(key)
+                break
+        if ch_raw is None or text_raw is None:
+            return None
+        try:
+            ch = int(ch_raw)
+        except (TypeError, ValueError):
+            return None
+        txt = str(text_raw).strip()
+        if not txt:
+            return None
+        return ch, txt
+
+    async def _decode_rx_log_group_text(
+        self, payload: dict[str, Any], attrs: dict[str, Any]
+    ) -> tuple[int, str] | None:
+        decoded = self._extract_text_and_channel_from_bag(payload) or self._extract_text_and_channel_from_bag(attrs)
+        if decoded is not None:
+            return decoded
+        payload_type = str(payload.get("payload_typename") or payload.get("payload_type") or "").upper()
+        if payload_type and "GRP_TXT" not in payload_type and payload_type not in ("5",):
+            return None
+
+        candidate_calls: list[tuple[Any, tuple[Any, ...]]] = []
+        for owner in (self._mesh, getattr(self._mesh, "commands", None)):
+            if owner is None:
+                continue
+            for method_name in (
+                "decode_rx_log_data",
+                "decode_rx_log_grp_txt",
+                "decode_group_text",
+                "decode_group_message",
+                "decode_rx_payload",
+            ):
+                fn = getattr(owner, method_name, None)
+                if callable(fn):
+                    candidate_calls.append((fn, (payload, attrs)))
+                    candidate_calls.append((fn, (payload,)))
+                    candidate_calls.append((fn, (dict(payload),)))
+        for fn, args in candidate_calls:
+            try:
+                out = fn(*args)
+                if inspect.isawaitable(out):
+                    out = await out
+            except Exception:
+                continue
+            if isinstance(out, dict):
+                decoded = self._extract_text_and_channel_from_bag(out)
+                if decoded is not None:
+                    return decoded
+                inner_payload = out.get("payload")
+                if isinstance(inner_payload, dict):
+                    decoded = self._extract_text_and_channel_from_bag(inner_payload)
+                    if decoded is not None:
+                        return decoded
+                inner_attrs = out.get("attributes")
+                if isinstance(inner_attrs, dict):
+                    decoded = self._extract_text_and_channel_from_bag(inner_attrs)
+                    if decoded is not None:
+                        return decoded
+        return None
 
     def _is_channel_command_allowed(self, kind: CmdKind, channel_idx: int) -> bool:
         key_by_kind = {
@@ -571,6 +735,19 @@ class BotService:
                 self._latest_pathinfo_str = _format_pathinfo(
                     path_len, path_nodes, hash_len=self._latest_hash_len
                 )
+        if isinstance(payload, dict):
+            decoded = await self._decode_rx_log_group_text(payload, attrs)
+            payload_type = str(payload.get("payload_typename") or payload.get("payload_type") or "").upper()
+            if "GRP_TXT" in payload_type or payload_type == "5":
+                rx_idx = decoded[0] if decoded is not None else -1
+                chan_hash = self._chan_hash_from_bag(payload) or self._chan_hash_from_bag(attrs)
+                chan_name = str(payload.get("chan_name") or attrs.get("chan_name") or "").strip()
+                if chan_hash:
+                    pkt_hash = self._pkt_hash_from_bag(payload) or self._pkt_hash_from_bag(attrs)
+                    await self._register_rx_log_group_event(rx_idx, chan_hash, chan_name, pkt_hash)
+                elif rx_idx >= 0 or chan_name:
+                    pkt_hash = self._pkt_hash_from_bag(payload) or self._pkt_hash_from_bag(attrs)
+                    await self._register_rx_log_group_event(rx_idx, "", chan_name, pkt_hash)
 
     async def refresh_node_store_from_contacts(self) -> int:
         rows: list[dict[str, Any]] = []
@@ -628,21 +805,70 @@ class BotService:
         if d > 0:
             await asyncio.sleep(d)
         msg = _clip(text)
-        try:
-            r = await self._mesh.commands.send_chan_msg(channel_idx, msg)
-            if r.type == EventType.ERROR:
-                logger.warning("channel send error: %s", r.payload)
+        cfg = self._cfg
+        max_attempts = max(1, int(getattr(cfg, "channel_delivery_max_attempts", 3) or 3))
+        rx_wait_sec = max(0.0, float(getattr(cfg, "channel_delivery_wait_sec", 10.0) or 10.0))
+        min_rx_repeats = max(0, int(getattr(cfg, "channel_delivery_min_rx_repeats", 1) or 1))
+        for attempt in range(max_attempts):
+            try:
+                r = await self._mesh.commands.send_chan_msg(channel_idx, msg)
+                if r.type == EventType.ERROR:
+                    logger.warning("channel send error: %s", r.payload)
+                    return False
+                send_payload = r.payload if isinstance(r.payload, dict) else {}
+                sent_chan_hash = self._chan_hash_from_bag(send_payload)
+                sent_chan_name = await self._resolve_channel_name(channel_idx)
+                logger.info(
+                    "reply sent kind=%s channel_idx=%s len=%s attempt=%s/%s",
+                    kind or "reply",
+                    channel_idx,
+                    len(msg),
+                    attempt + 1,
+                    max_attempts,
+                )
+                if min_rx_repeats <= 0:
+                    return True
+                since_ts = time.monotonic()
+                if rx_wait_sec > 0:
+                    await asyncio.sleep(rx_wait_sec)
+                heard = await self._count_heard_repeats_since(
+                    channel_idx,
+                    since_ts,
+                    sent_chan_hash=sent_chan_hash,
+                    sent_chan_name=sent_chan_name,
+                )
+                if heard >= min_rx_repeats:
+                    logger.info(
+                        "channel delivery confirmed kind=%s channel_idx=%s heard=%s required=%s chan_hash=%s chan_name=%r",
+                        kind or "reply",
+                        channel_idx,
+                        heard,
+                        min_rx_repeats,
+                        sent_chan_hash or "?",
+                        sent_chan_name or "?",
+                    )
+                    return True
+                logger.warning(
+                    "channel delivery not confirmed yet kind=%s channel_idx=%s heard=%s required=%s attempt=%s/%s chan_hash=%s chan_name=%r",
+                    kind or "reply",
+                    channel_idx,
+                    heard,
+                    min_rx_repeats,
+                    attempt + 1,
+                    max_attempts,
+                    sent_chan_hash or "?",
+                    sent_chan_name or "?",
+                )
+            except Exception:
+                logger.exception("send_chan_msg failed")
                 return False
-            logger.info(
-                "reply sent kind=%s channel_idx=%s len=%s",
-                kind or "reply",
-                channel_idx,
-                len(msg),
-            )
-            return True
-        except Exception:
-            logger.exception("send_chan_msg failed")
-            return False
+        logger.warning(
+            "channel delivery not confirmed after %s attempts kind=%s channel_idx=%s",
+            max_attempts,
+            kind or "reply",
+            channel_idx,
+        )
+        return False
 
     async def _send_dm(
         self,

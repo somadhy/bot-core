@@ -36,6 +36,10 @@ class BotConfig:
     # Private replies: wait for delivery ACK, else retry (separate limits).
     dm_delivery_wait_sec: float
     dm_delivery_max_attempts: int
+    # Channel replies: wait RX_LOG_DATA repeats, else retry.
+    channel_delivery_wait_sec: float
+    channel_delivery_min_rx_repeats: int
+    channel_delivery_max_attempts: int
     admin_public_keys: list[str] = field(default_factory=list)
     # Channel indices where `stop` is allowed for any sender (no pubkey; channel-only).
     admin_channel_indices: list[int] = field(default_factory=list)
@@ -58,6 +62,7 @@ class BotConfig:
         advert = raw.get("advert") or {}
         nodes = raw.get("nodes") or {}
         dm_delivery = raw.get("dm_delivery") or {}
+        channel_delivery = raw.get("channel_delivery") or {}
         poll = raw.get("poll") or {}
         commands = raw.get("commands") or {}
 
@@ -145,6 +150,33 @@ class BotConfig:
             dm_delivery_max_attempts = 1
         if dm_delivery_max_attempts > 50:
             dm_delivery_max_attempts = 50
+
+        try:
+            channel_delivery_wait_sec = float(channel_delivery.get("rx_wait_sec", 10) or 10)
+        except (TypeError, ValueError):
+            channel_delivery_wait_sec = 10.0
+        if channel_delivery_wait_sec < 0:
+            channel_delivery_wait_sec = 0.0
+        if channel_delivery_wait_sec > 600.0:
+            channel_delivery_wait_sec = 600.0
+
+        try:
+            channel_delivery_min_rx_repeats = int(channel_delivery.get("min_rx_repeats", 1) or 1)
+        except (TypeError, ValueError):
+            channel_delivery_min_rx_repeats = 1
+        if channel_delivery_min_rx_repeats < 0:
+            channel_delivery_min_rx_repeats = 0
+        if channel_delivery_min_rx_repeats > 1000:
+            channel_delivery_min_rx_repeats = 1000
+
+        try:
+            channel_delivery_max_attempts = int(channel_delivery.get("max_attempts", 3) or 3)
+        except (TypeError, ValueError):
+            channel_delivery_max_attempts = 3
+        if channel_delivery_max_attempts < 1:
+            channel_delivery_max_attempts = 1
+        if channel_delivery_max_attempts > 50:
+            channel_delivery_max_attempts = 50
 
         _ttl_raw = weather.get("cache_ttl_minutes")
         if _ttl_raw is None:
@@ -283,6 +315,9 @@ class BotConfig:
             node_key_preview_bytes=node_key_preview_bytes,
             dm_delivery_wait_sec=dm_delivery_wait_sec,
             dm_delivery_max_attempts=dm_delivery_max_attempts,
+            channel_delivery_wait_sec=channel_delivery_wait_sec,
+            channel_delivery_min_rx_repeats=channel_delivery_min_rx_repeats,
+            channel_delivery_max_attempts=channel_delivery_max_attempts,
             admin_public_keys=keys,
             admin_channel_indices=admin_chans,
             command_aliases=command_aliases,
