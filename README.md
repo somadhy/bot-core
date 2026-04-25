@@ -84,6 +84,7 @@ python -m meshcore_bot --diagnose
 |--------|----------|
 | `погода` / `weather` [город] | Погода; без города — `weather.default_city` |
 | `время` / `time` [город] | Локальное время в городе; без города — `weather.default_city` |
+| `пинг` / `ping` | Проверка отклика и метаданных пакета. Формат: direct — `🔢<hash-bytes>, ↔️direct, 📶<snr>[, ⏱Ns]`; non-direct — `🔢<hash-bytes>, 🪜<hops>[, 🧭<path>][, ⏱Ns]` (SNR для non-direct не выводится). `⏱` показывается только если `now - sender_timestamp > 0`; `🧭` — только если route есть в текущем событии. |
 | `помощь` / `help` | Короткий список команд |
 | `стоп` / `stop` | Остановка процесса: в **личке** — только если публичный ключ отправителя есть в `admins.public_keys`; в **канале** — только на индексах из `admins.channel_indices` |
 | `каналы` / `channels` | Список каналов из `channels.enabled_indices`: строки вида `индекс: имя` (имя с companion). **Только личка** и **только админ** (`admins.public_keys`). Длинный ответ режется на несколько сообщений (**каждое ≤ 150 байт UTF-8**, с префиксом `@[ник] `); между частями пауза не меньше `reply_delay_sec`, а при `reply_delay_sec: 0` — не меньше ~0,35 с. В каналах команда не обрабатывается. |
@@ -109,6 +110,8 @@ python -m meshcore_bot --diagnose
 - **`nodes.store_path`**: путь до JSON-хранилища узлов
 - **`poll.keepalive_sec`**: keepalive для USB/companion при простое (по умолчанию 60; `0` — выключить). Можно переопределить `MESHCORE_BOT_KEEPALIVE_SEC`
 - **`poll.keepalive_only_when_idle_sec`**: keepalive шлётся только если не было входящих сообщений ≥ N секунд (по умолчанию 30). Можно переопределить `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC`
+- **`MESHCORE_BOT_TRACE_CHANNEL_RAW`**: если `1/true/yes`, пишет сырые `CHANNEL_MSG_RECV` (`payload` + `attrs`) в лог
+- **`MESHCORE_BOT_TRACE_RX_LOG`**: если `1/true/yes`, пишет сырые `RX_LOG_DATA` (`payload` + `attrs`) в лог
 - **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`), `meteostat` (Bulk Data, без ключа) или `meteostat_rapidapi` (RapidAPI, нужен `RAPIDAPI_KEY`)
 - **`weather.fallback_provider`**: запасной провайдер погоды. Если основной провайдер вернул ошибку, бот попробует fallback (если задан). Любой поддерживаемый провайдер можно поставить основным и любым — запасным.
 
@@ -119,7 +122,7 @@ python -m meshcore_bot --diagnose
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex): остановка из **лички**, команды **`каналы` / `channels`** и **`мсг` / `msg`**
 - **`admins.channel_indices`**: индексы каналов (из `channels.enabled_indices`), где разрешена команда **`стоп` / `stop`** без проверки ключа отправителя
-- **`commands`**: опциональные **`aliases`** и **`channel_indices`** для команд `weather`, `time`, `help`, `stop`, `channels`, `msg`, `node` (см. [config.example.yaml](config.example.yaml))
+- **`commands`**: опциональные **`aliases`** и **`channel_indices`** для команд `weather`, `time`, `ping`, `help`, `stop`, `channels`, `msg`, `node` (см. [config.example.yaml](config.example.yaml))
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет (в т.ч. не будет админских команд в ЛС)
 
 ### Keepalive и предупреждение «No CHANNEL/CONTACT ... for 90s»

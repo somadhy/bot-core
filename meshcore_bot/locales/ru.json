@@ -9,7 +9,10 @@
     "internal": "Ошибка бота."
   },
   "help": {
-    "body": "Команды: погода [город] | weather [city] | время [город] | time [city] | узел [hex] | node [hex] | помощь | help"
+    "body": "Команды: погода [город] | weather [city] | время [город] | time [city] | пинг | ping | узел [hex] | node [hex] | помощь | help"
+  },
+  "ping": {
+    "pong": ""
   },
   "node": {
     "bad_prefix": "Укажите hex-префикс ключа (минимум {min_hex} символа, это 1 байт).",

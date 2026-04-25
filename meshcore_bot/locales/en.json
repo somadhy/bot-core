@@ -9,7 +9,10 @@
     "internal": "Bot error."
   },
   "help": {
-    "body": "Commands: weather [city] | погода [город] | time [city] | время [город] | node [hex] | узел [hex] | help | помощь"
+    "body": "Commands: weather [city] | погода [город] | time [city] | время [город] | ping | пинг | node [hex] | узел [hex] | help | помощь"
+  },
+  "ping": {
+    "pong": ""
   },
   "node": {
     "bad_prefix": "Provide a key hex prefix (at least {min_hex} symbols, i.e. 1 byte).",

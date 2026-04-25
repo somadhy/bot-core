@@ -79,6 +79,7 @@ commands:
   # По умолчанию:
   #   weather / погода
   #   time / время
+  #   ping / пинг
   #   help / помощь
   #   stop / стоп
   #   channels / каналы  (только ЛС админа — список channels.enabled_indices)
@@ -91,6 +92,9 @@ commands:
     # Пусто/не задано — команда общая (во всех channels.enabled_indices).
     # channel_indices: [0]
   time:
+    aliases: []
+    # channel_indices: [0]
+  ping:
     aliases: []
     # channel_indices: [0]
   help:

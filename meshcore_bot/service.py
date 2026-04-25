@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import os
 import re
 import logging
 import time
@@ -38,6 +39,10 @@ _NODE_PART_MIN_GAP_SEC = 0.35
 _NODE_MIN_PREFIX_HEX_LEN = 2
 _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _REPEATER_TYPE_MARKERS = ("repeater", "relay", "router", "2")
+_UNKNOWN_PATHINFO = "🔢?, 🪜?, 🧭?"
+_UNKNOWN_SIGNAL_QUALITY = "📶?"
+_TRACE_RX_LOG = os.environ.get("MESHCORE_BOT_TRACE_RX_LOG", "").lower() in ("1", "true", "yes")
+_TRACE_CHANNEL_RAW = os.environ.get("MESHCORE_BOT_TRACE_CHANNEL_RAW", "").lower() in ("1", "true", "yes")
 
 
 def _channel_idx_from_event(event: Event) -> int:
@@ -143,6 +148,293 @@ def _time_line(city: str, tz_offset_seconds: int | None) -> str:
     return f"{city_show}\n🕒{local_hhmm}"
 
 
+def _parse_rx_log_data(raw_payload: Any) -> dict[str, Any]:
+    """Parse RX_LOG_DATA payload to extract path info."""
+    result: dict[str, Any] = {}
+    hex_str: str | None = None
+
+    if isinstance(raw_payload, dict):
+        raw = raw_payload.get("payload") or raw_payload.get("raw_hex")
+        if isinstance(raw, bytes):
+            hex_str = raw.hex()
+        elif raw is not None:
+            hex_str = str(raw)
+    elif isinstance(raw_payload, bytes):
+        hex_str = raw_payload.hex()
+    elif raw_payload is not None:
+        hex_str = str(raw_payload)
+
+    if not hex_str:
+        return result
+
+    hex_str = hex_str.lower().replace(" ", "").replace("\n", "").replace("\r", "")
+    if len(hex_str) < 4:
+        return result
+
+    try:
+        path_len = int(hex_str[2:4], 16)
+    except ValueError:
+        return {}
+
+    path_start = 4
+    path_end = path_start + (path_len * 2)
+    if len(hex_str) < path_end:
+        return {}
+
+    path_hex = hex_str[path_start:path_end]
+    result["path_len"] = path_len
+    result["path_nodes"] = [path_hex[i : i + 2] for i in range(0, len(path_hex), 2)]
+    tail = hex_str[path_end:]
+    # Many firmwares append a packet/channel hash after path bytes.
+    if tail:
+        result["raw_tail_hex"] = tail
+    return result
+
+
+def _parse_hex_nodes(raw: Any) -> list[str] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        out = [str(x).strip().lower() for x in raw if str(x).strip()]
+        return out or None
+    s = str(raw).strip().lower().replace("0x", "")
+    s = "".join(ch for ch in s if ch in "0123456789abcdef")
+    if len(s) < 2:
+        return None
+    if len(s) % 2 != 0:
+        s = s[:-1]
+    nodes = [s[i : i + 2] for i in range(0, len(s), 2)]
+    return nodes or None
+
+
+def _extract_path_nodes(
+    payload: dict[str, Any] | None,
+    attrs: dict[str, Any] | None = None,
+) -> list[str] | None:
+    keys = ("path_nodes", "path", "path_hex", "route", "route_hex")
+    for bag in (payload, attrs):
+        if not isinstance(bag, dict):
+            continue
+        for key in keys:
+            nodes = _parse_hex_nodes(bag.get(key))
+            if nodes:
+                return nodes
+    return None
+
+
+def _coerce_hash_len(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return max(0, min(3, value))
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s.endswith("b"):
+        s = s[:-1].strip()
+    try:
+        n = int(s, 10)
+    except ValueError:
+        return None
+    return max(0, min(3, n))
+
+
+def _extract_hash_len(*bags: dict[str, Any] | None) -> int | None:
+    keys = (
+        "hash_len",
+        "path_hash_size",
+        "path_hash_len",
+        "packet_hash_len",
+        "path_hash_mode",
+        "hash_length",
+        "path_hash_length",
+    )
+    for bag in bags:
+        if not isinstance(bag, dict):
+            continue
+        for key in keys:
+            raw_val = bag.get(key)
+            v = _coerce_hash_len(raw_val)
+            if v is not None:
+                if key == "path_hash_mode":
+                    mode_to_bytes = {0: 1, 1: 2, 2: 3}
+                    return mode_to_bytes.get(v, v)
+                return v
+        # Hex hash forms like "2b" or "a1b2".
+        for key in ("path_hash", "packet_hash", "channel_hash"):
+            raw = bag.get(key)
+            if raw is None:
+                continue
+            s = str(raw).strip().lower().replace("0x", "")
+            s = "".join(ch for ch in s if ch in "0123456789abcdef")
+            if not s:
+                continue
+            bytes_len = (len(s) + 1) // 2
+            return max(0, min(3, bytes_len))
+    return None
+
+
+def _format_pathinfo(
+    path_len: int | None,
+    path_nodes: list[str] | None = None,
+    *,
+    hash_len: int | None = None,
+) -> str:
+    """Return compact, emoji-first path info."""
+    if path_len is None:
+        return _UNKNOWN_PATHINFO
+    if path_len == 0:
+        h = "?" if hash_len is None else str(hash_len)
+        return f"🔢{h}, ↔️direct"
+    nodes = path_nodes or []
+    if hash_len is not None:
+        path_hash_len = hash_len
+    elif nodes:
+        path_hash_len = 3 if len(nodes) >= 3 else len(nodes)
+    else:
+        path_hash_len = 3 if path_len >= 3 else max(1, path_len)
+    if nodes:
+        group_bytes = max(1, min(3, int(path_hash_len)))
+        groups: list[str] = []
+        for i in range(0, len(nodes), group_bytes):
+            chunk = nodes[i : i + group_bytes]
+            if len(chunk) < group_bytes:
+                break
+            groups.append("".join(chunk))
+        path_show = ":".join(groups) if groups else "?"
+        return f"🔢{path_hash_len}, 🪜{path_len}, 🧭{path_show}"
+    return f"🔢{path_hash_len}, 🪜{path_len}"
+
+
+def _extract_signal_quality(payload: dict[str, Any] | None, attrs: dict[str, Any] | None = None) -> str | None:
+    """Extract signal quality string from known payload fields."""
+    def _values_recursive(obj: Any) -> list[tuple[str, Any]]:
+        out: list[tuple[str, Any]] = []
+        if not isinstance(obj, dict):
+            return out
+        for k, v in obj.items():
+            ks = str(k)
+            out.append((ks, v))
+            if isinstance(v, dict):
+                for nk, nv in _values_recursive(v):
+                    out.append((f"{ks}.{nk}", nv))
+        return out
+
+    def _pick_metric(bag: dict[str, Any] | None, tokens: tuple[str, ...]) -> Any:
+        if not isinstance(bag, dict):
+            return None
+        # 1) Exact known keys first.
+        known_keys = (
+            "snr",
+            "SNR",
+            "rx_snr",
+            "last_snr",
+            "snr_db",
+            "lora_snr",
+        )
+        low = {str(k).lower(): v for k, v in bag.items()}
+        for k in known_keys:
+            if k.lower() in low and low[k.lower()] is not None:
+                lk = k.lower()
+                if any(t in lk for t in tokens):
+                    return low[k.lower()]
+        # 2) Flexible recursive search by token in key path.
+        for key_path, val in _values_recursive(bag):
+            if val is None:
+                continue
+            kp = key_path.lower()
+            if any(t in kp for t in tokens):
+                return val
+        return None
+
+    snr = None
+    for bag in (payload, attrs):
+        if snr is None:
+            snr = _pick_metric(bag, ("snr",))
+    return f"📶{snr}" if snr is not None else "📶?"
+
+
+def _split_signal_quality(quality: str | None) -> str | None:
+    if not quality:
+        return None
+    for part in [p.strip() for p in str(quality).split(",")]:
+        if part.startswith("📶"):
+            return part[2:].strip()
+    return None
+
+
+def _merge_signal_quality(prev_quality: str | None, new_quality: str | None) -> str:
+    prev_snr = _split_signal_quality(prev_quality)
+    new_snr = _split_signal_quality(new_quality)
+    snr = new_snr if new_snr not in (None, "", "?") else prev_snr
+    return f"📶{snr}" if snr not in (None, "") else "📶?"
+
+
+def _ping_reply_body(prefix: str, pathinfo: str) -> str:
+    lead = (prefix or "").strip()
+    tail = (pathinfo or "").strip()
+    if lead and tail:
+        return f"{lead} {tail}"
+    return lead or tail
+
+
+def _packet_age_part(payload: dict[str, Any], attrs: dict[str, Any] | None = None) -> str | None:
+    """Return packet age as emoji label from sender_timestamp, e.g. ``⏱3s``."""
+    raw = payload.get("sender_timestamp")
+    if raw is None and isinstance(attrs, dict):
+        raw = attrs.get("sender_timestamp")
+    if raw is None:
+        return None
+    try:
+        sender_ts = int(raw)
+    except (TypeError, ValueError):
+        return None
+    recv_raw = payload.get("recv_time")
+    if recv_raw is None and isinstance(attrs, dict):
+        recv_raw = attrs.get("recv_time")
+    if recv_raw is not None:
+        try:
+            base_ts = int(recv_raw)
+        except (TypeError, ValueError):
+            base_ts = int(time.time())
+    else:
+        base_ts = int(time.time())
+    age_sec = base_ts - sender_ts
+    if age_sec <= 0:
+        return None
+    return f"⏱{age_sec}s"
+
+
+def _pathinfo_from_message_payload(
+    payload: dict[str, Any],
+    signal_quality: str | None = None,
+    attrs: dict[str, Any] | None = None,
+    rx_hash_len: int | None = None,
+) -> str | None:
+    raw = payload.get("path_len")
+    if raw is None:
+        return None
+    try:
+        path_len = int(raw)
+    except (TypeError, ValueError):
+        return None
+    hash_len = _extract_hash_len(payload, attrs)
+    if hash_len is None:
+        hash_len = rx_hash_len
+    nodes = _extract_path_nodes(payload, attrs)
+    age_part = _packet_age_part(payload, attrs)
+    quality = signal_quality or _UNKNOWN_SIGNAL_QUALITY
+    if path_len == 0:
+        if age_part:
+            return f"{_format_pathinfo(path_len, hash_len=hash_len)}, {quality}, {age_part}"
+        return f"{_format_pathinfo(path_len, hash_len=hash_len)}, {quality}"
+    base = _format_pathinfo(path_len, nodes, hash_len=hash_len)
+    parts = [base]
+    if age_part:
+        parts.append(age_part)
+    return ", ".join(parts)
+
+
 def _key_preview(pubkey_hex: str, key_bytes: int) -> str:
     n = max(1, min(4, int(key_bytes))) * 2
     return (pubkey_hex or "").lower()[:n]
@@ -194,11 +486,16 @@ class BotService:
             cfg.node_advert_max_stored,
         )
         self._node_store.load()
+        self._latest_pathinfo_str = _UNKNOWN_PATHINFO
+        self._latest_signal_quality_str = _UNKNOWN_SIGNAL_QUALITY
+        self._latest_hash_len: int | None = None
+        self._latest_path_nodes: list[str] | None = None
 
     def _is_channel_command_allowed(self, kind: CmdKind, channel_idx: int) -> bool:
         key_by_kind = {
             CmdKind.WEATHER: "weather",
             CmdKind.TIME: "time",
+            CmdKind.PING: "ping",
             CmdKind.HELP: "help",
             CmdKind.STOP: "stop",
             CmdKind.CHANNELS: "channels",
@@ -217,8 +514,63 @@ class BotService:
 
     def attach(self) -> None:
         self._mesh.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
+        rx_log_data_event = getattr(EventType, "RX_LOG_DATA", None)
+        if rx_log_data_event is not None:
+            self._mesh.subscribe(rx_log_data_event, self._on_rx_log_data)
         if self._cfg.dm_enabled:
             self._mesh.subscribe(EventType.CONTACT_MSG_RECV, self._on_contact_msg)
+
+    async def _on_rx_log_data(self, event: Event) -> None:
+        payload = event.payload if isinstance(event.payload, dict) else event.payload
+        attrs = event.attributes if isinstance(event.attributes, dict) else {}
+        if _TRACE_RX_LOG:
+            logger.info("RX_LOG_DATA raw payload=%r attrs=%r", payload, attrs)
+        if isinstance(payload, dict):
+            quality = _extract_signal_quality(payload, attrs)
+            self._latest_signal_quality_str = _merge_signal_quality(
+                self._latest_signal_quality_str, quality
+            )
+            rx_hash_len = _extract_hash_len(payload, attrs)
+            if rx_hash_len is not None:
+                self._latest_hash_len = rx_hash_len
+            rx_nodes = _extract_path_nodes(payload, attrs)
+            if rx_nodes:
+                self._latest_path_nodes = rx_nodes
+        parsed = _parse_rx_log_data(payload)
+        payload_bag = payload if isinstance(payload, dict) else {}
+        path_len_raw = payload_bag.get("path_len", attrs.get("path_len"))
+        path_len: int | None = None
+        try:
+            if path_len_raw is not None:
+                path_len = int(path_len_raw)
+        except (TypeError, ValueError):
+            path_len = None
+        if path_len is None and parsed:
+            parsed_len = parsed.get("path_len")
+            if isinstance(parsed_len, int):
+                path_len = parsed_len
+
+        path_nodes = self._latest_path_nodes
+        if path_nodes is None and parsed:
+            parsed_nodes = parsed.get("path_nodes")
+            if isinstance(parsed_nodes, list) and parsed_nodes:
+                path_nodes = [str(x).strip().lower() for x in parsed_nodes if str(x).strip()]
+                self._latest_path_nodes = path_nodes
+
+        if self._latest_hash_len is None:
+            tail_hex = str((parsed or {}).get("raw_tail_hex") or "")
+            if tail_hex:
+                self._latest_hash_len = max(0, min(3, (len(tail_hex) + 1) // 2))
+        if isinstance(path_len, int):
+            if path_len == 0:
+                self._latest_pathinfo_str = (
+                    f"{_format_pathinfo(path_len, path_nodes, hash_len=self._latest_hash_len)}, "
+                    f"{self._latest_signal_quality_str}"
+                )
+            else:
+                self._latest_pathinfo_str = _format_pathinfo(
+                    path_len, path_nodes, hash_len=self._latest_hash_len
+                )
 
     async def refresh_node_store_from_contacts(self) -> int:
         rows: list[dict[str, Any]] = []
@@ -392,6 +744,9 @@ class BotService:
 
     async def _on_channel_msg(self, event: Event) -> None:
         payload = event.payload if isinstance(event.payload, dict) else {}
+        attrs = event.attributes if isinstance(event.attributes, dict) else {}
+        if _TRACE_CHANNEL_RAW:
+            logger.info("CHANNEL_MSG_RECV raw payload=%r attrs=%r", payload, attrs)
         ch = _channel_idx_from_event(event)
         text = str(payload.get("text", ""))
         if ch not in self._cfg.channels_enabled:
@@ -412,6 +767,24 @@ class BotService:
         )
         nick = _channel_sender_label(text)
         parsed = parse_incoming(text, self._cfg)
+        msg_quality = _extract_signal_quality(payload, attrs)
+        self._latest_signal_quality_str = _merge_signal_quality(
+            self._latest_signal_quality_str, msg_quality
+        )
+        msg_hash_len = _extract_hash_len(payload, attrs)
+        if msg_hash_len is not None:
+            self._latest_hash_len = msg_hash_len
+        msg_nodes = _extract_path_nodes(payload, attrs)
+        if msg_nodes:
+            self._latest_path_nodes = msg_nodes
+        msg_pathinfo = _pathinfo_from_message_payload(
+            payload,
+            msg_quality or self._latest_signal_quality_str,
+            attrs,
+            self._latest_hash_len,
+        )
+        if msg_pathinfo:
+            self._latest_pathinfo_str = msg_pathinfo
         if parsed.kind == CmdKind.NONE:
             logger.debug(
                 "channel idx=%s: not a bot command, ignored (text=%r)",
@@ -438,6 +811,13 @@ class BotService:
             body = self._i18n.t("help.body")
             out = _reply_mention(nick, body)
             await self._send_chan(ch, out, kind="help")
+            return
+
+        if parsed.kind == CmdKind.PING:
+            out = _reply_mention(
+                nick, _ping_reply_body(self._i18n.t("ping.pong"), self._latest_pathinfo_str)
+            )
+            await self._send_chan(ch, out, kind="ping")
             return
 
         if parsed.kind == CmdKind.NODE:
@@ -603,6 +983,35 @@ class BotService:
         if parsed.kind == CmdKind.HELP:
             await self._send_dm(
                 dst, _reply_mention(nick, self._i18n.t("help.body")), kind="help"
+            )
+            return
+
+        if parsed.kind == CmdKind.PING:
+            msg_quality = _extract_signal_quality(payload, attrs)
+            self._latest_signal_quality_str = _merge_signal_quality(
+                self._latest_signal_quality_str, msg_quality
+            )
+            msg_hash_len = _extract_hash_len(payload, attrs)
+            if msg_hash_len is not None:
+                self._latest_hash_len = msg_hash_len
+            msg_nodes = _extract_path_nodes(payload, attrs)
+            if msg_nodes:
+                self._latest_path_nodes = msg_nodes
+            msg_pathinfo = _pathinfo_from_message_payload(
+                payload,
+                msg_quality or self._latest_signal_quality_str,
+                attrs,
+                self._latest_hash_len,
+            )
+            if msg_pathinfo:
+                self._latest_pathinfo_str = msg_pathinfo
+            await self._send_dm(
+                dst,
+                _reply_mention(
+                    nick,
+                    _ping_reply_body(self._i18n.t("ping.pong"), self._latest_pathinfo_str),
+                ),
+                kind="ping",
             )
             return
 
