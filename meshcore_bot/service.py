@@ -195,6 +195,26 @@ class BotService:
         )
         self._node_store.load()
 
+    def _is_channel_command_allowed(self, kind: CmdKind, channel_idx: int) -> bool:
+        key_by_kind = {
+            CmdKind.WEATHER: "weather",
+            CmdKind.TIME: "time",
+            CmdKind.HELP: "help",
+            CmdKind.STOP: "stop",
+            CmdKind.CHANNELS: "channels",
+            CmdKind.MSG: "msg",
+            CmdKind.NODE: "node",
+        }
+        cmd_key = key_by_kind.get(kind)
+        if not cmd_key:
+            return True
+        limits = getattr(self._cfg, "command_channel_indices", {}) or {}
+        allowed = limits.get(cmd_key) or []
+        # Empty list -> no additional channel limitation.
+        if not allowed:
+            return True
+        return channel_idx in allowed
+
     def attach(self) -> None:
         self._mesh.subscribe(EventType.CHANNEL_MSG_RECV, self._on_channel_msg)
         if self._cfg.dm_enabled:
@@ -397,6 +417,13 @@ class BotService:
                 "channel idx=%s: not a bot command, ignored (text=%r)",
                 ch,
                 text[:120],
+            )
+            return
+        if not self._is_channel_command_allowed(parsed.kind, ch):
+            logger.debug(
+                "channel idx=%s: command %s blocked by commands.<name>.channel_indices",
+                ch,
+                parsed.kind.name,
             )
             return
         if parsed.kind == CmdKind.STOP:

@@ -87,15 +87,24 @@ commands:
   # Здесь можно добавить короткие синонимы, например `wz` для погоды.
   weather:
     aliases: []
+    # Опционально: ограничить команду конкретными каналами.
+    # Пусто/не задано — команда общая (во всех channels.enabled_indices).
+    # channel_indices: [0]
   time:
     aliases: []
+    # channel_indices: [0]
   help:
     aliases: []
+    # channel_indices: [0]
   stop:
     aliases: []
+    # channel_indices: [0]
   channels:
     aliases: []
+    # channel_indices: [0]
   msg:
     aliases: []
+    # channel_indices: [0]
   node:
     aliases: []
+    # channel_indices: [0]

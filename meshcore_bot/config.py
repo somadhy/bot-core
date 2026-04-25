@@ -43,6 +43,9 @@ class BotConfig:
     # names ("weather", "time", "help", "stop", "channels", "msg");
     # values are lists of additional trigger words.
     command_aliases: dict[str, list[str]] = field(default_factory=dict)
+    # Optional per-command channel constraints for CHANNEL messages.
+    # Empty list means command is allowed in any enabled channel.
+    command_channel_indices: dict[str, list[int]] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], base_dir: Path) -> BotConfig:
@@ -215,6 +218,41 @@ class BotConfig:
             "node": _aliases_for("node"),
         }
 
+        def _channel_indices_for(cmd_name: str) -> list[int]:
+            bag = commands.get(cmd_name) or {}
+            raw = bag.get("channel_indices")
+            if raw is None:
+                return []
+            if not isinstance(raw, list):
+                raise ValueError(
+                    f"commands.{cmd_name}.channel_indices must be a list of integers"
+                )
+            out: list[int] = []
+            for x in raw:
+                try:
+                    idx = int(x)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"commands.{cmd_name}.channel_indices must contain integers, got {x!r}"
+                    ) from None
+                if idx not in enabled:
+                    raise ValueError(
+                        f"commands.{cmd_name}.channel_indices entry {idx} must be listed in "
+                        f"channels.enabled_indices (currently {enabled!r})"
+                    )
+                out.append(idx)
+            return out
+
+        command_channel_indices = {
+            "weather": _channel_indices_for("weather"),
+            "time": _channel_indices_for("time"),
+            "help": _channel_indices_for("help"),
+            "stop": _channel_indices_for("stop"),
+            "channels": _channel_indices_for("channels"),
+            "msg": _channel_indices_for("msg"),
+            "node": _channel_indices_for("node"),
+        }
+
         return cls(
             serial_device=str(serial.get("device", "/dev/ttyUSB0")),
             serial_baudrate=int(serial.get("baudrate", 115200)),
@@ -244,6 +282,7 @@ class BotConfig:
             admin_public_keys=keys,
             admin_channel_indices=admin_chans,
             command_aliases=command_aliases,
+            command_channel_indices=command_channel_indices,
         )
 
 

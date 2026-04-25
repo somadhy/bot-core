@@ -93,6 +93,7 @@ python -m meshcore_bot --diagnose
 Ответы бота начинаются с `@[ник]` (в канале — из части до `:` в вашей строке).
 
 Дополнительные триггеры задаются в **`commands.*.aliases`** в `config.yaml` (в т.ч. `commands.time`, `commands.channels`, `commands.msg`).
+Также можно задать **`commands.*.channel_indices`**: если список не пустой, команда в канале обрабатывается только на этих индексах (каждый индекс должен быть в `channels.enabled_indices`).
 
 ## Конфигурация
 
@@ -118,7 +119,7 @@ python -m meshcore_bot --diagnose
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex): остановка из **лички**, команды **`каналы` / `channels`** и **`мсг` / `msg`**
 - **`admins.channel_indices`**: индексы каналов (из `channels.enabled_indices`), где разрешена команда **`стоп` / `stop`** без проверки ключа отправителя
-- **`commands`**: опциональные **`aliases`** для команд `weather`, `time`, `help`, `stop`, `channels`, `msg`, `node` (см. [config.example.yaml](config.example.yaml))
+- **`commands`**: опциональные **`aliases`** и **`channel_indices`** для команд `weather`, `time`, `help`, `stop`, `channels`, `msg`, `node` (см. [config.example.yaml](config.example.yaml))
 - **`dm.enabled`**: если `false`, подписка на личные сообщения не ставится — ответов в ЛС не будет (в т.ч. не будет админских команд в ЛС)
 
 ### Keepalive и предупреждение «No CHANNEL/CONTACT ... for 90s»
