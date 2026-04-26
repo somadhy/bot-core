@@ -42,6 +42,8 @@ _HEX_RE = re.compile(r"^[0-9a-fA-F]+$")
 _REPEATER_TYPE_MARKERS = ("repeater", "relay", "router", "2")
 _UNKNOWN_PATHINFO = "🔢?, 🪜?, 🧭?"
 _UNKNOWN_SIGNAL_QUALITY = "📶?"
+# FIRMWARE_SENTINEL: uint8 0xFF is sometimes used for unknown/missing path_len.
+_MAX_PLAUSIBLE_PATH_LEN = 32
 _TRACE_RX_LOG = os.environ.get("MESHCORE_BOT_TRACE_RX_LOG", "").lower() in ("1", "true", "yes")
 _TRACE_CHANNEL_RAW = os.environ.get("MESHCORE_BOT_TRACE_CHANNEL_RAW", "").lower() in ("1", "true", "yes")
 
@@ -149,47 +151,102 @@ def _time_line(city: str, tz_offset_seconds: int | None) -> str:
     return f"{city_show}\n🕒{local_hhmm}"
 
 
-def _parse_rx_log_data(raw_payload: Any) -> dict[str, Any]:
-    """Parse RX_LOG_DATA payload to extract path info."""
-    result: dict[str, Any] = {}
-    hex_str: str | None = None
+def _is_text_msg_rx_payload(bag: dict[str, Any]) -> bool:
+    """DM / plain text messages use a different inner layout than FLOOD/GRP path bytes."""
+    ptn = str(bag.get("payload_typename") or "").upper()
+    if "TEXT_MSG" in ptn or ("TEXT" in ptn and "MSG" in ptn):
+        return True
+    try:
+        return int(bag.get("payload_type") or -1) == 2
+    except (TypeError, ValueError):
+        return False
 
+
+def _coerce_rx_log_hex_str(raw_payload: Any) -> str:
+    """Hex string of the logged frame; use inner ``payload`` when set (including empty), else ``raw_hex``."""
+    raw: Any = None
     if isinstance(raw_payload, dict):
-        raw = raw_payload.get("payload") or raw_payload.get("raw_hex")
-        if isinstance(raw, bytes):
-            hex_str = raw.hex()
-        elif raw is not None:
-            hex_str = str(raw)
-    elif isinstance(raw_payload, bytes):
-        hex_str = raw_payload.hex()
-    elif raw_payload is not None:
-        hex_str = str(raw_payload)
+        if "payload" in raw_payload and raw_payload.get("payload") is not None:
+            raw = raw_payload.get("payload")
+        else:
+            raw = raw_payload.get("raw_hex")
+    if isinstance(raw, bytes):
+        return raw.hex()
+    if raw is not None and str(raw).strip():
+        return str(raw)
+    if isinstance(raw_payload, bytes):
+        return raw_payload.hex()
+    if raw_payload is not None and not isinstance(raw_payload, dict):
+        return str(raw_payload)
+    return ""
 
-    if not hex_str:
-        return result
 
-    hex_str = hex_str.lower().replace(" ", "").replace("\n", "").replace("\r", "")
+def _parse_rx_log_flood_body_hex(hex_in: str) -> dict[str, Any]:
+    """Legacy: first byte + path_len in second byte, then 1-byte per-hop IDs (GRP flood style)."""
+    result: dict[str, Any] = {}
+    hex_str = hex_in.lower().replace(" ", "").replace("\n", "").replace("\r", "")
     if len(hex_str) < 4:
         return result
-
     try:
         path_len = int(hex_str[2:4], 16)
     except ValueError:
-        return {}
-
+        return result
+    if not _is_plausible_path_len(path_len):
+        return result
     path_start = 4
     path_end = path_start + (path_len * 2)
     if len(hex_str) < path_end:
-        return {}
-
+        return result
     path_hex = hex_str[path_start:path_end]
     result["path_len"] = path_len
     result["path_nodes"] = [path_hex[i : i + 2] for i in range(0, len(path_hex), 2)]
     tail = hex_str[path_end:]
-    # Many firmwares append a packet/channel hash after path bytes.
     if tail:
         result["raw_tail_hex"] = tail
     return result
+
+
+def _parse_rx_log_data(raw_payload: Any) -> dict[str, Any]:
+    """Parse RX_LOG_DATA: trust structured path_len/path from meshcore, then try flood wire layout."""
+    if isinstance(raw_payload, dict):
+        pl_raw = raw_payload.get("path_len")
+        if pl_raw is not None:
+            try:
+                pl = int(pl_raw)
+            except (TypeError, ValueError):
+                pl = None
+            if pl is not None and _is_plausible_path_len(pl):
+                r: dict[str, Any] = {"path_len": pl}
+                path_s = str(raw_payload.get("path") or "").strip()
+                if path_s:
+                    nodes = _parse_hex_nodes(path_s)
+                    if nodes:
+                        r["path_nodes"] = nodes
+                if pl == 0:
+                    return r
+                if r.get("path_nodes"):
+                    return r
+                if _is_text_msg_rx_payload(raw_payload):
+                    # e.g. second byte 0x80 in body is not hop count; do not FLOOD-decode the blob.
+                    return r
+    if (
+        isinstance(raw_payload, dict)
+        and _is_text_msg_rx_payload(raw_payload)
+        and raw_payload.get("path_len") is None
+    ):
+        return {}
+
+    hx = _coerce_rx_log_hex_str(raw_payload)
+    return _parse_rx_log_flood_body_hex(hx) if hx.strip() else {}
+
+
+def _is_plausible_path_len(path_len: int) -> bool:
+    """Mesh hop count is small; 255/0xFF is often a missing-value marker from the radio stack."""
+    if path_len < 0 or path_len > _MAX_PLAUSIBLE_PATH_LEN:
+        return False
+    if path_len == 255:
+        return False
+    return True
 
 
 def _parse_hex_nodes(raw: Any) -> list[str] | None:
@@ -358,9 +415,10 @@ def _extract_signal_quality(payload: dict[str, Any] | None, attrs: dict[str, Any
 def _split_signal_quality(quality: str | None) -> str | None:
     if not quality:
         return None
+    prefix = "📶"
     for part in [p.strip() for p in str(quality).split(",")]:
-        if part.startswith("📶"):
-            return part[2:].strip()
+        if part.startswith(prefix):
+            return part[len(prefix) :].strip()
     return None
 
 
@@ -411,18 +469,25 @@ def _pathinfo_from_message_payload(
     signal_quality: str | None = None,
     attrs: dict[str, Any] | None = None,
     rx_hash_len: int | None = None,
+    fallback_path_nodes: list[str] | None = None,
 ) -> str | None:
     raw = payload.get("path_len")
+    if raw is None and isinstance(attrs, dict):
+        raw = attrs.get("path_len")
     if raw is None:
         return None
     try:
         path_len = int(raw)
     except (TypeError, ValueError):
         return None
+    if not _is_plausible_path_len(path_len):
+        return None
     hash_len = _extract_hash_len(payload, attrs)
     if hash_len is None:
         hash_len = rx_hash_len
     nodes = _extract_path_nodes(payload, attrs)
+    if not nodes:
+        nodes = fallback_path_nodes
     age_part = _packet_age_part(payload, attrs)
     quality = signal_quality or _UNKNOWN_SIGNAL_QUALITY
     if path_len == 0:
@@ -487,7 +552,9 @@ class BotService:
             cfg.node_advert_max_stored,
         )
         self._node_store.load()
-        self._latest_pathinfo_str = _UNKNOWN_PATHINFO
+        # Empty until a real RX/CHANNEL message provides path; do not use "all ?" as truthy cache
+        # (channel ping would then ignore SNR fallback).
+        self._latest_pathinfo_str = ""
         self._latest_signal_quality_str = _UNKNOWN_SIGNAL_QUALITY
         self._latest_hash_len: int | None = None
         self._latest_path_nodes: list[str] | None = None
@@ -700,6 +767,17 @@ class BotService:
             rx_nodes = _extract_path_nodes(payload, attrs)
             if rx_nodes:
                 self._latest_path_nodes = rx_nodes
+        else:
+            quality = _extract_signal_quality(None, attrs)
+            self._latest_signal_quality_str = _merge_signal_quality(
+                self._latest_signal_quality_str, quality
+            )
+            rx_h = _extract_hash_len({}, attrs)
+            if rx_h is not None:
+                self._latest_hash_len = rx_h
+            rx_n = _extract_path_nodes({}, attrs)
+            if rx_n:
+                self._latest_path_nodes = rx_n
         parsed = _parse_rx_log_data(payload)
         payload_bag = payload if isinstance(payload, dict) else {}
         path_len_raw = payload_bag.get("path_len", attrs.get("path_len"))
@@ -725,15 +803,20 @@ class BotService:
             tail_hex = str((parsed or {}).get("raw_tail_hex") or "")
             if tail_hex:
                 self._latest_hash_len = max(0, min(3, (len(tail_hex) + 1) // 2))
-        if isinstance(path_len, int):
+        # Prefer hash width from this frame (e.g. path_hash_size) over stale or tail-only inference.
+        event_hash_len = _extract_hash_len(payload_bag, attrs) if payload_bag else _extract_hash_len(
+            {}, attrs
+        )
+        h_fmt = event_hash_len if event_hash_len is not None else self._latest_hash_len
+        if isinstance(path_len, int) and _is_plausible_path_len(path_len):
             if path_len == 0:
                 self._latest_pathinfo_str = (
-                    f"{_format_pathinfo(path_len, path_nodes, hash_len=self._latest_hash_len)}, "
+                    f"{_format_pathinfo(path_len, path_nodes, hash_len=h_fmt)}, "
                     f"{self._latest_signal_quality_str}"
                 )
             else:
                 self._latest_pathinfo_str = _format_pathinfo(
-                    path_len, path_nodes, hash_len=self._latest_hash_len
+                    path_len, path_nodes, hash_len=h_fmt
                 )
         if isinstance(payload, dict):
             decoded = await self._decode_rx_log_group_text(payload, attrs)
@@ -1008,6 +1091,7 @@ class BotService:
             msg_quality or self._latest_signal_quality_str,
             attrs,
             self._latest_hash_len,
+            self._latest_path_nodes,
         )
         if msg_pathinfo:
             self._latest_pathinfo_str = msg_pathinfo
@@ -1040,8 +1124,16 @@ class BotService:
             return
 
         if parsed.kind == CmdKind.PING:
+            q = msg_quality or self._latest_signal_quality_str
+            cache = (self._latest_pathinfo_str or "").strip()
+            if msg_pathinfo is not None:
+                pong_info = msg_pathinfo
+            elif cache and cache != _UNKNOWN_PATHINFO:
+                pong_info = cache
+            else:
+                pong_info = f"{_UNKNOWN_PATHINFO}, {q}"
             out = _reply_mention(
-                nick, _ping_reply_body(self._i18n.t("ping.pong"), self._latest_pathinfo_str)
+                nick, _ping_reply_body(self._i18n.t("ping.pong"), pong_info)
             )
             await self._send_chan(ch, out, kind="ping")
             return
@@ -1217,25 +1309,26 @@ class BotService:
             self._latest_signal_quality_str = _merge_signal_quality(
                 self._latest_signal_quality_str, msg_quality
             )
-            msg_hash_len = _extract_hash_len(payload, attrs)
-            if msg_hash_len is not None:
-                self._latest_hash_len = msg_hash_len
-            msg_nodes = _extract_path_nodes(payload, attrs)
-            if msg_nodes:
-                self._latest_path_nodes = msg_nodes
+            # Private messages: do not use channel/RX log cache for path hash or path nodes; those
+            # are unrelated to the DM route and can show garbage hop counts or group-hash width.
             msg_pathinfo = _pathinfo_from_message_payload(
                 payload,
                 msg_quality or self._latest_signal_quality_str,
                 attrs,
-                self._latest_hash_len,
+                rx_hash_len=None,
+                fallback_path_nodes=None,
             )
-            if msg_pathinfo:
-                self._latest_pathinfo_str = msg_pathinfo
+            q = msg_quality or self._latest_signal_quality_str
+            pong_info = (
+                msg_pathinfo
+                if msg_pathinfo is not None
+                else f"{_UNKNOWN_PATHINFO}, {q}"
+            )
             await self._send_dm(
                 dst,
                 _reply_mention(
                     nick,
-                    _ping_reply_body(self._i18n.t("ping.pong"), self._latest_pathinfo_str),
+                    _ping_reply_body(self._i18n.t("ping.pong"), pong_info),
                 ),
                 kind="ping",
             )

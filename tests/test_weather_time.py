@@ -124,6 +124,49 @@ class WeatherLocalTimeTests(unittest.TestCase):
         out = service._pathinfo_from_message_payload({"path_len": 3, "path_hash_mode": 1}, "📶10.5")
         self.assertEqual(out, "🔢2, 🪜3")
 
+    def test_pathinfo_reads_path_len_from_attrs(self) -> None:
+        out = service._pathinfo_from_message_payload(
+            {},
+            "📶10.5",
+            {"path_len": 3, "path_hash_mode": 1, "path": "aaaabbbbcccc"},
+        )
+        self.assertEqual(out, "🔢2, 🪜3, 🧭aaaa:bbbb:cccc")
+
+    def test_pathinfo_rejects_sentinel_255_hops(self) -> None:
+        out = service._pathinfo_from_message_payload({"path_len": 255, "path_hash_mode": 1}, "📶1")
+        self.assertIsNone(out)
+
+    def test_pathinfo_rejects_implausible_hop_count(self) -> None:
+        out = service._pathinfo_from_message_payload({"path_len": 100}, "📶1")
+        self.assertIsNone(out)
+
+    def test_parse_rx_log_text_msg_direct_uses_path_len_not_body_prefix(self) -> None:
+        d = {
+            "raw_hex": "2dcc0a8070ee89e71a471f88421f7dbb68c46674e7b3b66d",
+            "payload": "0a8070ee89e71a471f88421f7dbb68c46674e7b3b66d",
+            "path_len": 0,
+            "path_hash_size": 3,
+            "path": "",
+            "payload_typename": "TEXT_MSG",
+            "route_typename": "DIRECT",
+            "payload_type": 2,
+            "route_type": 2,
+        }
+        out = service._parse_rx_log_data(d)
+        self.assertEqual(out, {"path_len": 0})
+
+    def test_parse_rx_log_text_msg_no_structured_does_not_flood_parse(self) -> None:
+        d = {
+            "payload": "0a8070ee89e71a471f88421f7dbb68c46674e7b3b66d",
+            "payload_typename": "TEXT_MSG",
+        }
+        self.assertEqual(service._parse_rx_log_data(d), {})
+
+    def test_parse_rx_log_flood_body_when_no_structured_path(self) -> None:
+        out = service._parse_rx_log_data({"payload": "0001aa"})
+        self.assertEqual(out.get("path_len"), 1)
+        self.assertEqual(out.get("path_nodes"), ["aa"])
+
     def test_pathinfo_hides_zero_or_negative_age(self) -> None:
         with patch("meshcore_bot.service.time.time", return_value=1000):
             out = service._pathinfo_from_message_payload(
@@ -277,6 +320,50 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
         await svc._on_rx_log_data(event)
 
         self.assertEqual(svc._latest_pathinfo_str, "🔢2, 🪜3, 🧭aaaa:bbbb:cccc")
+
+    async def test_rx_log_text_msg_direct_includes_path_hash_size_and_direct(self) -> None:
+        cfg = types.SimpleNamespace(
+            dm_enabled=True,
+            weather_default_city="Moscow",
+            channels_enabled=[0],
+            admin_public_keys=[],
+            admin_channel_indices=[],
+            reply_delay_sec=0,
+            dm_delivery_wait_sec=0,
+            dm_delivery_max_attempts=1,
+            channel_delivery_wait_sec=10,
+            channel_delivery_min_rx_repeats=1,
+            channel_delivery_max_attempts=3,
+            node_advert_store_path=Path("/tmp/test-node-adverts.json"),
+            node_advert_retention_days=7,
+            node_advert_max_stored=5000,
+        )
+        mesh = types.SimpleNamespace(get_contact_by_key_prefix=lambda _p: None)
+        blacklist = types.SimpleNamespace(is_blocked=lambda *_a, **_k: False)
+        svc = service.BotService(
+            cfg=cfg,
+            mesh=mesh,
+            i18n=_I18nStub(),
+            blacklist=blacklist,
+            shutdown=types.SimpleNamespace(set=lambda: None),
+        )
+        event = types.SimpleNamespace(
+            payload={
+                "path_len": 0,
+                "path_hash_size": 3,
+                "path": "",
+                "snr": 12.0,
+                "payload_typename": "TEXT_MSG",
+                "route_typename": "DIRECT",
+                "route_type": 2,
+            },
+            attributes={"path_len": 0, "path": ""},
+        )
+        await svc._on_rx_log_data(event)
+        s = svc._latest_pathinfo_str
+        self.assertIn("🔢3", s)
+        self.assertIn("↔️direct", s)
+        self.assertIn("📶12", s)
 
 
 class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
