@@ -28,6 +28,13 @@ def _pick_first_str(contact: dict[str, Any], keys: tuple[str, ...]) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class ContactSnapshotStats:
+    upserted: int = 0
+    new: int = 0
+    skipped_no_key: int = 0
+
+
 @dataclass
 class NodeAdvertRecord:
     public_key: str
@@ -43,6 +50,9 @@ class NodeAdvertStore:
         self._max_stored = max(1, int(max_stored))
         self._items: dict[str, NodeAdvertRecord] = {}
         self._loaded = False
+
+    def count(self) -> int:
+        return len(self._items)
 
     def load(self) -> None:
         if self._loaded:
@@ -113,14 +123,37 @@ class NodeAdvertStore:
         self._items[key] = rec
         return True
 
-    def upsert_contacts_snapshot(self, contacts: list[dict[str, Any]]) -> int:
-        changed = 0
+    def upsert_contacts_snapshot(self, contacts: list[dict[str, Any]]) -> ContactSnapshotStats:
+        upserted = 0
+        new = 0
+        skipped_no_key = 0
         now = _now_ts()
         for c in contacts:
+            key = _normalize_hex(
+                _pick_first_str(
+                    c,
+                    (
+                        "public_key",
+                        "pubkey",
+                        "node_pubkey",
+                        "key",
+                    ),
+                )
+            )
+            if not key:
+                skipped_no_key += 1
+                continue
+            is_new = key not in self._items
             if self.upsert_contact(c, now_ts=now):
-                changed += 1
+                upserted += 1
+                if is_new:
+                    new += 1
         self.purge_and_trim()
-        return changed
+        return ContactSnapshotStats(
+            upserted=upserted,
+            new=new,
+            skipped_no_key=skipped_no_key,
+        )
 
     def purge_and_trim(self) -> None:
         if self._retention_sec > 0:

@@ -110,6 +110,7 @@ python -m meshcore_bot --diagnose
   - дедуплицирует повторы по `pkt_hash`,
   - если repeats `< channel_delivery.min_rx_repeats`, повторяет отправку до `channel_delivery.max_attempts` (по умолчанию 3).
 - **`advert.interval_hours`**: периодический адверт узла через meshcore (`send_advert`); `0` — выключено; **`advert.flood`**: широкий адверт (зависит от прошивки)
+- **`nodes.sync_interval_minutes`**: периодическая синхронизация контактов companion в хранилище узлов (по умолчанию 15 мин; `0` — только при старте)
 - **`nodes.advert_retention_days`**: сколько дней хранить узлы из snapshots контактов (по умолчанию 7)
 - **`nodes.max_stored`**: максимальное число хранимых узлов (по умолчанию 5000; при превышении удаляются самые старые)
 - **`nodes.key_preview_bytes`**: сколько первых байт ключа показывать в `узел/node` (1..4, по умолчанию 2)

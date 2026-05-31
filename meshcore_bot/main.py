@@ -17,6 +17,7 @@ from meshcore_bot.channel_info import (
     format_listening_line,
 )
 from meshcore_bot.advert_task import run_periodic_advert
+from meshcore_bot.node_sync_task import run_periodic_node_sync
 from meshcore_bot.config import load_config
 from meshcore_bot.i18n import I18n
 from meshcore_bot.message_poll import run_serial_message_poll
@@ -95,8 +96,7 @@ async def async_main() -> int:
     # Subscribe before polling so CHANNEL_MSG_RECV handlers are registered first.
     svc = BotService(cfg, mesh, i18n, blacklist, shutdown)
     try:
-        refreshed = await svc.refresh_node_store_from_contacts()
-        logger.info("Node advert store synced from contacts: %s rows", refreshed)
+        await svc.refresh_node_store_from_contacts()
     except Exception:
         logger.exception("initial node advert store sync failed")
     svc.attach()
@@ -115,6 +115,11 @@ async def async_main() -> int:
         advert_task = asyncio.create_task(
             run_periodic_advert(mesh, shutdown, cfg.advert_interval_hours, cfg.advert_flood)
         )
+    node_sync_task: asyncio.Task[None] | None = None
+    if cfg.node_sync_interval_minutes > 0:
+        node_sync_task = asyncio.create_task(
+            run_periodic_node_sync(svc, shutdown, cfg.node_sync_interval_minutes)
+        )
 
     try:
         ch_table = await fetch_channel_table(mesh, cfg.channels_enabled)
@@ -123,12 +128,17 @@ async def async_main() -> int:
         ch_table = {}
 
     logger.info(
-        "Bot running (locale=%s, dm=%s, advert=%s)",
+        "Bot running (locale=%s, dm=%s, advert=%s, node_sync=%s)",
         cfg.locale,
         cfg.dm_enabled,
         (
             f"every {cfg.advert_interval_hours:.3g} h (flood={cfg.advert_flood})"
             if cfg.advert_interval_hours > 0
+            else "off"
+        ),
+        (
+            f"every {cfg.node_sync_interval_minutes:.3g} min"
+            if cfg.node_sync_interval_minutes > 0
             else "off"
         ),
     )
@@ -147,6 +157,12 @@ async def async_main() -> int:
         advert_task.cancel()
         try:
             await advert_task
+        except asyncio.CancelledError:
+            pass
+    if node_sync_task is not None:
+        node_sync_task.cancel()
+        try:
+            await node_sync_task
         except asyncio.CancelledError:
             pass
     poll_task.cancel()

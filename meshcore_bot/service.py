@@ -833,53 +833,91 @@ class BotService:
                     await self._register_rx_log_group_event(rx_idx, "", chan_name, pkt_hash)
 
     async def refresh_node_store_from_contacts(self) -> int:
+        t0 = time.monotonic()
         rows: list[dict[str, Any]] = []
-        # meshcore API differs by version: some builds expose mesh.get_contacts(),
-        # others only mesh.commands.get_contacts() + internal _contacts cache.
-        direct = getattr(self._mesh, "get_contacts", None)
-        if callable(direct):
+        source = "none"
+
+        # Always pull fresh contacts from the companion first; mesh.get_contacts() may
+        # return a stale in-memory snapshot and skip the device refresh otherwise.
+        commands = getattr(self._mesh, "commands", None)
+        get_contacts_cmd = getattr(commands, "get_contacts", None) if commands else None
+        if callable(get_contacts_cmd):
             try:
-                contacts = direct() or []
-                rows = [x for x in contacts if isinstance(x, dict)]
+                ev = await get_contacts_cmd()
+                if ev.type == EventType.ERROR:
+                    logger.warning("node sync: commands.get_contacts() error: %s", ev.payload)
+                else:
+                    payload = ev.payload if isinstance(ev.payload, dict) else {}
+                    data = payload.get("contacts", payload)
+                    if isinstance(data, list):
+                        rows = [x for x in data if isinstance(x, dict)]
+                        if rows:
+                            source = "commands.get_contacts"
             except Exception:
-                logger.exception("mesh.get_contacts() failed while syncing node store")
+                logger.exception("node sync: commands.get_contacts() failed")
+
         if not rows:
-            try:
-                ev = await self._mesh.commands.get_contacts()
-                payload = ev.payload if isinstance(ev.payload, dict) else {}
-                data = payload.get("contacts", payload)
-                if isinstance(data, list):
-                    rows = [x for x in data if isinstance(x, dict)]
-            except Exception:
-                logger.exception("mesh.commands.get_contacts() failed while syncing node store")
+            direct = getattr(self._mesh, "get_contacts", None)
+            if callable(direct):
+                try:
+                    contacts = direct() or []
+                    rows = [x for x in contacts if isinstance(x, dict)]
+                    if rows:
+                        source = "mesh.get_contacts"
+                except Exception:
+                    logger.exception("node sync: mesh.get_contacts() failed")
+
         if not rows:
             cached = getattr(self._mesh, "_contacts", None)
             if isinstance(cached, list):
                 rows = [x for x in cached if isinstance(x, dict)]
+                if rows:
+                    source = "_contacts_cache"
             elif isinstance(cached, dict):
                 rows = [x for x in cached.values() if isinstance(x, dict)]
+                if rows:
+                    source = "_contacts_cache"
+
         type_counts: dict[str, int] = {}
         for row in rows:
             t = str(row.get("type") or row.get("node_type") or row.get("kind") or "unknown").strip().lower()
             type_counts[t] = type_counts.get(t, 0) + 1
-        changed = self._node_store.upsert_contacts_snapshot(rows)
+
+        store_before = self._node_store.count()
+        stats = self._node_store.upsert_contacts_snapshot(rows)
         self._node_store.save()
+        store_after = self._node_store.count()
+        elapsed_ms = (time.monotonic() - t0) * 1000.0
+
         logger.info(
-            "node store contact snapshot: total=%s stored=%s types=%s",
+            "node store sync: source=%s contacts=%s upserted=%s new=%s skipped_no_key=%s "
+            "store_before=%s store_after=%s types=%s elapsed_ms=%.0f",
+            source,
             len(rows),
-            changed,
+            stats.upserted,
+            stats.new,
+            stats.skipped_no_key,
+            store_before,
+            store_after,
             type_counts,
+            elapsed_ms,
         )
         if rows and not any(
             any(marker in node_type for marker in _REPEATER_TYPE_MARKERS)
             for node_type in type_counts
         ):
             logger.warning(
-                "contact snapshot has no repeater-like nodes (markers=%s); types=%s",
+                "node sync: contact snapshot has no repeater-like nodes (markers=%s); types=%s",
                 _REPEATER_TYPE_MARKERS,
                 type_counts,
             )
-        return changed
+        if not rows:
+            logger.warning(
+                "node sync: no contacts returned from companion (source=%s, store=%s)",
+                source,
+                store_after,
+            )
+        return stats.new
 
     async def _send_chan(
         self, channel_idx: int, text: str, *, kind: str | None = None

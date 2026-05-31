@@ -33,6 +33,7 @@ class BotConfig:
     node_advert_max_stored: int
     node_advert_store_path: Path
     node_key_preview_bytes: int
+    node_sync_interval_minutes: float
     # Private replies: wait for delivery ACK, else retry (separate limits).
     dm_delivery_wait_sec: float
     dm_delivery_max_attempts: int
@@ -132,6 +133,15 @@ class BotConfig:
             node_key_preview_bytes = 1
         if node_key_preview_bytes > 4:
             node_key_preview_bytes = 4
+
+        try:
+            node_sync_interval_minutes = float(nodes.get("sync_interval_minutes", 15) or 15)
+        except (TypeError, ValueError):
+            node_sync_interval_minutes = 15.0
+        if node_sync_interval_minutes < 0:
+            node_sync_interval_minutes = 0.0
+        if node_sync_interval_minutes > 1440.0:
+            node_sync_interval_minutes = 1440.0
 
         try:
             dm_delivery_wait_sec = float(dm_delivery.get("wait_sec", 10) or 10)
@@ -313,6 +323,7 @@ class BotConfig:
             node_advert_max_stored=node_advert_max_stored,
             node_advert_store_path=node_advert_store_path,
             node_key_preview_bytes=node_key_preview_bytes,
+            node_sync_interval_minutes=node_sync_interval_minutes,
             dm_delivery_wait_sec=dm_delivery_wait_sec,
             dm_delivery_max_attempts=dm_delivery_max_attempts,
             channel_delivery_wait_sec=channel_delivery_wait_sec,
