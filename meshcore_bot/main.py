@@ -10,17 +10,19 @@ import sys
 
 from meshcore import EventType, MeshCore
 
-from meshcore_bot.blacklist import Blacklist
+from meshcore_bot.companion_contacts import ensure_companion_contacts_from_adverts
 from meshcore_bot.channel_info import (
     fetch_channel_table,
     format_companion_table_line,
     format_listening_line,
 )
+from meshcore_bot.blacklist import Blacklist
 from meshcore_bot.advert_task import run_periodic_advert
 from meshcore_bot.node_sync_task import run_periodic_node_sync
 from meshcore_bot.config import load_config
 from meshcore_bot.i18n import I18n
 from meshcore_bot.message_poll import run_serial_message_poll
+
 from meshcore_bot.service import BotService
 
 logging.basicConfig(
@@ -31,41 +33,6 @@ if os.environ.get("MESHCORE_BOT_DEBUG", "").lower() in ("1", "true", "yes"):
     logging.getLogger("meshcore_bot.service").setLevel(logging.DEBUG)
     logging.getLogger("meshcore_bot.message_poll").setLevel(logging.DEBUG)
 logger = logging.getLogger("meshcore_bot")
-
-
-async def _ensure_companion_contacts_persistence(mesh: MeshCore) -> None:
-    """Try to enable companion contact autosave/rotation if API is available."""
-    commands = getattr(mesh, "commands", None)
-    if commands is None:
-        return
-    # Different meshcore versions may expose different names.
-    toggles = (
-        ("enable_contacts_autosave", (), {}),
-        ("set_contacts_autosave", (True,), {}),
-        ("set_contact_autosave", (True,), {}),
-    )
-    rotation_calls = (
-        ("enable_contacts_rotation", (), {}),
-        ("set_contacts_rotation", (True,), {}),
-    )
-    for name, args, kwargs in toggles:
-        fn = getattr(commands, name, None)
-        if callable(fn):
-            try:
-                await fn(*args, **kwargs)
-                logger.info("Companion contacts autosave enabled via %s()", name)
-                break
-            except Exception:
-                logger.warning("Could not enable contacts autosave via %s()", name, exc_info=True)
-    for name, args, kwargs in rotation_calls:
-        fn = getattr(commands, name, None)
-        if callable(fn):
-            try:
-                await fn(*args, **kwargs)
-                logger.info("Companion contacts rotation enabled via %s()", name)
-                break
-            except Exception:
-                logger.warning("Could not enable contacts rotation via %s()", name, exc_info=True)
 
 
 async def async_main() -> int:
@@ -86,7 +53,7 @@ async def async_main() -> int:
         return 1
 
     try:
-        await _ensure_companion_contacts_persistence(mesh)
+        await ensure_companion_contacts_from_adverts(mesh)
         cr = await mesh.commands.get_contacts()
         if cr.type == EventType.ERROR:
             logger.warning("get_contacts: %s", cr.payload)
