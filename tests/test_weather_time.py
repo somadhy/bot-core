@@ -577,6 +577,36 @@ class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"temp_C":"28"', text)
         curl_mock.assert_awaited_once()
 
+    def test_tz_offset_from_iana_moscow(self) -> None:
+        self.assertEqual(weather_cmd._tz_offset_from_iana("Europe/Moscow"), 10_800)
+
+    async def test_fetch_wttr_in_once_adds_tz_from_geocode(self) -> None:
+        cfg = types.SimpleNamespace(locale="ru")
+        i18n = _I18nStub()
+        body = (
+            '{"current_condition":[{"humidity":"43","precipMM":"0.0","pressure":"1008",'
+            '"temp_C":"28","weatherCode":"200","windspeedKmph":"15"}],'
+            '"nearest_area":[{"areaName":[{"value":"Moscow"}]}'
+        )
+        with (
+            patch("meshcore_bot.commands.weather_cmd._wttr_fetch_j1_text", AsyncMock(return_value=body)),
+            patch(
+                "meshcore_bot.commands.weather_cmd._geocode_tz_offset_seconds",
+                AsyncMock(return_value=10_800),
+            ),
+        ):
+            ok, payload, err = await weather_cmd._fetch_wttr_in_once(
+                "Moscow",
+                "Moscow",
+                cfg,
+                i18n,
+                "https://v2.wttr.in",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(err, "provider_error")
+        self.assertEqual(payload.tz_offset_seconds, 10_800)
+
     async def test_fetch_weather_payload_uses_wttr_fallback_when_primary_fails(self) -> None:
         cfg = types.SimpleNamespace(
             weather_provider="openmeteo",

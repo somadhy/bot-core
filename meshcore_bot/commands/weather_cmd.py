@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -153,6 +154,20 @@ def _fmt_num(v: float, decimals: int = 1) -> str:
 def _fmt_pressure_hpa(hpa: float) -> str:
     """Sea-level pressure in hPa (integer, typical for forecasts)."""
     return str(int(round(float(hpa))))
+
+
+def _tz_offset_from_iana(tz_name: str) -> int | None:
+    name = (tz_name or "").strip()
+    if not name:
+        return None
+    try:
+        now = _dt.datetime.now(ZoneInfo(name))
+    except Exception:
+        return None
+    offset = now.utcoffset()
+    if offset is None:
+        return None
+    return int(offset.total_seconds())
 
 
 def _request_error_detail(exc: Exception, *, locale: str = "en") -> str:
@@ -386,6 +401,8 @@ async def _geocode_open_meteo(
             return False, None, "city_not_found"
         g0 = results[0]
         tz_offset = g0.get("utc_offset_seconds")
+        if tz_offset is None:
+            tz_offset = _tz_offset_from_iana(str(g0.get("timezone") or ""))
         return (
             True,
             _GeocodeResult(
@@ -476,6 +493,22 @@ async def _geocode_city(
     if err2 == "city_not_found":
         return False, None, "city_not_found"
     return False, None, "provider_error"
+
+
+async def _geocode_tz_offset_seconds(
+    city: str, cfg: BotConfig, i18n: I18n
+) -> int | None:
+    """Resolve UTC offset for local time; wttr.in j1 does not include timezone metadata."""
+    try:
+        async with httpx.AsyncClient(timeout=OPEN_METEO_GEOCODE_TIMEOUT) as client:
+            ok, geo, err = await _geocode_city(city, cfg, i18n, client=client)
+            if ok and geo is not None and geo.tz_offset_seconds is not None:
+                return int(geo.tz_offset_seconds)
+            if err == "city_not_found":
+                return None
+    except httpx.HTTPError as e:
+        logger.debug("tz geocode failed for %r: %r", city.strip(), e)
+    return None
 
 
 def _rapidapi_headers(host: str) -> dict[str, str] | None:
@@ -1123,6 +1156,7 @@ async def _fetch_wttr_in_once(
 
     tf = float(temp)
     t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
+    tz_offset = await _geocode_tz_offset_seconds(name or city, cfg, i18n)
     return (
         True,
         WeatherPayload(
@@ -1136,7 +1170,7 @@ async def _fetch_wttr_in_once(
                 pressure_hpa,
                 cfg.locale,
             ),
-            None,
+            tz_offset,
         ),
         "provider_error",
     )
