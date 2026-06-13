@@ -67,12 +67,13 @@ poll:
 weather:
   # openmeteo — без API-ключа, обычно доступен из РФ (api.open-meteo.com)
   # openweathermap — нужен WEATHER_API_KEY
-  # meteostat — без API-ключа (используется Bulk Data: data.meteostat.net; обновление может запаздывать до ~24ч).
+  # meteostat — без API-ключа (Bulk Data: data.meteostat.net; нужна загрузка stations.db ~31 МБ).
+  # wttr.in — без API-ключа, один лёгкий HTTP-запрос (удобный fallback, если Open-Meteo недоступен).
   # meteostat_rapidapi — Meteostat JSON API через RapidAPI (нужен RAPIDAPI_KEY).
   provider: openmeteo
   # Запасной провайдер: используется, если основной вернул ошибку.
   # Можно указать любой поддерживаемый провайдер. Пусто/отсутствует — без fallback.
-  fallback_provider: meteostat
+  fallback_provider: wttr.in
   default_city: Moscow
   # Кеш ответа по одному городу (минуты). 0 — без кеша.
   cache_ttl_minutes: 15

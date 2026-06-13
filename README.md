@@ -11,7 +11,7 @@ Python-бот для [MeshCore](https://meshcore.co.uk) Companion по USB: ко
 - По умолчанию погода через **Open-Meteo** (ключ не нужен).
 - Для **OpenWeatherMap** задайте **`WEATHER_API_KEY`** в `.env` и в `config.yaml`: **`weather.provider: openweathermap`**
 - Для **Meteostat через RapidAPI** задайте **`RAPIDAPI_KEY`** в `.env` и в `config.yaml`: **`weather.provider: meteostat_rapidapi`** (или `weather.fallback_provider: meteostat_rapidapi`)
-- В `config.example.yaml` по умолчанию настроен **fallback** на **Meteostat** (`weather.fallback_provider: meteostat`) на случай ошибок у основного провайдера.
+- В `config.example.yaml` по умолчанию настроен **fallback** на **wttr.in** (`weather.fallback_provider: wttr.in`) на случай ошибок у основного провайдера.
 - Можно настроить **fallback-провайдера**: `weather.fallback_provider` (будет использован, если основной провайдер вернул ошибку).
 
 ## Docker: запуск бота
@@ -34,6 +34,13 @@ docker compose up --build
   ```
 
 - Файлы **`./config.yaml`** и **`./data`** монтируются с хоста.
+- В `docker-compose.yml` включён **`network_mode: host`** (сеть Linux-хоста). Без этого исходящие HTTPS из bridge-контейнера иногда не доходят до API погоды (таймаут и у `curl`, и у Python), хотя с хоста всё открывается.
+
+Проверка погоды из контейнера после `up --build`:
+
+```bash
+docker compose exec bot curl -4 -m 15 "https://v2.wttr.in/Moscow?format=j1&lang=ru" | head -c 200
+```
 
 ### Docker: диагностика (Companion жив, список каналов и индексов)
 
@@ -120,12 +127,13 @@ python -m meshcore_bot --diagnose
 - **`poll.keepalive_only_when_idle_sec`**: keepalive шлётся только если не было входящих сообщений ≥ N секунд (по умолчанию 30). Можно переопределить `MESHCORE_BOT_KEEPALIVE_ONLY_WHEN_IDLE_SEC`
 - **`MESHCORE_BOT_TRACE_CHANNEL_RAW`**: если `1/true/yes`, пишет сырые `CHANNEL_MSG_RECV` (`payload` + `attrs`) в лог
 - **`MESHCORE_BOT_TRACE_RX_LOG`**: если `1/true/yes`, пишет сырые `RX_LOG_DATA` (`payload` + `attrs`) в лог
-- **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`), `meteostat` (Bulk Data, без ключа) или `meteostat_rapidapi` (RapidAPI, нужен `RAPIDAPI_KEY`)
+- **`weather.provider`**: `openmeteo` (по умолчанию), `openweathermap` (нужен `WEATHER_API_KEY`), `wttr.in` / `wttr` (без ключа), `meteostat` (Bulk Data, без ключа) или `meteostat_rapidapi` (RapidAPI, нужен `RAPIDAPI_KEY`)
 - **`weather.fallback_provider`**: запасной провайдер погоды. Если основной провайдер вернул ошибку, бот попробует fallback (если задан). Любой поддерживаемый провайдер можно поставить основным и любым — запасным.
 
 Примечание про **Meteostat**:
 
-- Провайдер `meteostat` в этом боте использует **Bulk Data** (`data.meteostat.net`), который **не требует API-ключа** (но данные могут запаздывать до ~24 часов).
+- Провайдер `wttr.in` использует **wttr.in** (один лёгкий HTTP-запрос, без ключа; удобен как fallback, если Open-Meteo недоступен).
+- Провайдер `meteostat` в этом боте использует **Bulk Data** (`data.meteostat.net`), который **не требует API-ключа**, но при первом запуске скачивает `stations.db` (~31 МБ; на медленных сетях может не успеть).
 - Провайдер `meteostat_rapidapi` использует **Meteostat JSON API** (`meteostat.p.rapidapi.com`) и требует **`RAPIDAPI_KEY`**.
 - **`blacklist.path`**: JSON `{"blocked_keys": ["hex", ...]}`
 - **`admins.public_keys`**: полные публичные ключи (hex): остановка из **лички**, команды **`каналы` / `channels`** и **`мсг` / `msg`**

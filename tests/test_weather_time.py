@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+import sqlite3
 import sys
+import tempfile
 import types
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -422,6 +425,204 @@ class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
             await weather_cmd.fetch_weather_payload("Rome", cfg, i18n, use_cache=False)
 
         self.assertEqual(mocked_fetch.await_count, 2)
+
+    async def test_fetch_weather_payload_uses_fallback_when_primary_fails(self) -> None:
+        cfg = types.SimpleNamespace(
+            weather_provider="openmeteo",
+            weather_provider_fallback="meteostat",
+            weather_cache_ttl_minutes=0.0,
+            locale="ru",
+        )
+        i18n = _I18nStub()
+        primary = AsyncMock(
+            return_value=(
+                False,
+                WeatherPayload("errors.weather_failed", tz_offset_seconds=None),
+                "provider_error",
+            )
+        )
+        fallback = AsyncMock(
+            return_value=(True, WeatherPayload("Moscow\n☀️", tz_offset_seconds=10800), "provider_error")
+        )
+        with (
+            patch("meshcore_bot.commands.weather_cmd._fetch_open_meteo", primary),
+            patch("meshcore_bot.commands.weather_cmd._fetch_meteostat", fallback),
+        ):
+            payload = await weather_cmd.fetch_weather_payload("Moscow", cfg, i18n, use_cache=False)
+
+        self.assertEqual(payload.weather_body, "Moscow\n☀️")
+        primary.assert_awaited_once()
+        fallback.assert_awaited_once()
+
+    async def test_fetch_weather_payload_skips_unconfigured_fallback(self) -> None:
+        cfg = types.SimpleNamespace(
+            weather_provider="openmeteo",
+            weather_provider_fallback="meteostat_rapidapi",
+            weather_cache_ttl_minutes=0.0,
+            locale="ru",
+        )
+        i18n = _I18nStub()
+        primary = AsyncMock(
+            return_value=(
+                False,
+                WeatherPayload("errors.weather_failed:451", tz_offset_seconds=None),
+                "provider_error",
+            )
+        )
+        fallback = AsyncMock(
+            return_value=(
+                False,
+                WeatherPayload("errors.rapidapi_not_configured", tz_offset_seconds=None),
+                "not_configured",
+            )
+        )
+        with (
+            patch("meshcore_bot.commands.weather_cmd._fetch_open_meteo", primary),
+            patch("meshcore_bot.commands.weather_cmd._fetch_meteostat_rapidapi", fallback),
+        ):
+            payload = await weather_cmd.fetch_weather_payload("Moscow", cfg, i18n, use_cache=False)
+
+        self.assertEqual(payload.weather_body, "errors.weather_failed:451")
+        primary.assert_awaited_once()
+        fallback.assert_awaited_once()
+
+    async def test_geocode_city_falls_back_to_nominatim(self) -> None:
+        cfg = types.SimpleNamespace(locale="ru")
+        i18n = _I18nStub()
+        client = AsyncMock()
+        open_meteo = AsyncMock(return_value=(False, None, "provider_error"))
+        nominatim = AsyncMock(
+            return_value=(
+                True,
+                weather_cmd._GeocodeResult(
+                    lat=55.625578,
+                    lon=37.6063916,
+                    name="Москва",
+                    tz_offset_seconds=None,
+                ),
+                "provider_error",
+            )
+        )
+        with (
+            patch("meshcore_bot.commands.weather_cmd._geocode_open_meteo", open_meteo),
+            patch("meshcore_bot.commands.weather_cmd._geocode_nominatim", nominatim),
+        ):
+            ok, geo, err = await weather_cmd._geocode_city("Moscow", cfg, i18n, client=client)
+
+        self.assertTrue(ok)
+        self.assertIsNotNone(geo)
+        assert geo is not None
+        self.assertEqual(geo.name, "Москва")
+        self.assertEqual(err, "provider_error")
+        open_meteo.assert_awaited_once()
+        nominatim.assert_awaited_once()
+
+    def test_request_error_detail_maps_connect_timeout(self) -> None:
+        err = weather_cmd._request_error_detail(weather_cmd.httpx.ConnectTimeout(""), locale="ru")
+        self.assertEqual(err, "таймаут")
+
+    def test_wttr_in_request_url_matches_curl_format(self) -> None:
+        url = weather_cmd._wttr_in_request_url(
+            "https://v2.wttr.in",
+            weather_cmd.quote("Moscow"),
+            "ru",
+        )
+        self.assertEqual(url, "https://v2.wttr.in/Moscow?format=j1&lang=ru")
+
+    def test_parse_wttr_j1_partial_from_truncated_body(self) -> None:
+        body = (
+            '{"current_condition":[{"FeelsLikeC":"30","humidity":"43","precipMM":"0.0",'
+            '"pressure":"1008","temp_C":"28","weatherCode":"200","windspeedKmph":"15"}],'
+            '"nearest_area":[{"areaName":[{"value":"Москва"}]}'
+        )
+        name, cur = weather_cmd._parse_wttr_j1_partial(body, fallback_city="Moscow")
+        self.assertEqual(name, "Москва")
+        self.assertEqual(cur["temp_C"], "28")
+        self.assertEqual(cur["weatherCode"], "200")
+
+    async def test_wttr_fetch_j1_text_curl_accepts_partial_on_timeout(self) -> None:
+        body = (
+            '{"current_condition":[{"humidity":"43","precipMM":"0.0","pressure":"1008",'
+            '"temp_C":"28","weatherCode":"200","windspeedKmph":"15"}],'
+            '"nearest_area":[{"areaName":[{"value":"Moscow"}]}'
+        )
+        proc = unittest.mock.MagicMock()
+        proc.returncode = 28
+        proc.communicate = AsyncMock(return_value=(body.encode(), b"curl: (28) timeout"))
+
+        with patch("meshcore_bot.commands.weather_cmd.asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+            text = await weather_cmd._wttr_fetch_j1_text_curl("https://v2.wttr.in/Moscow?format=j1&lang=ru")
+
+        self.assertIn('"temp_C":"28"', text)
+
+    async def test_wttr_fetch_falls_back_to_curl_on_httpx_error(self) -> None:
+        body = (
+            '{"current_condition":[{"humidity":"43","precipMM":"0.0","pressure":"1008",'
+            '"temp_C":"28","weatherCode":"200","windspeedKmph":"15"}],'
+            '"nearest_area":[{"areaName":[{"value":"Moscow"}]}'
+        )
+
+        with (
+            patch(
+                "meshcore_bot.commands.weather_cmd._wttr_fetch_j1_text_httpx",
+                AsyncMock(side_effect=weather_cmd.httpx.ConnectTimeout("")),
+            ),
+            patch(
+                "meshcore_bot.commands.weather_cmd._wttr_fetch_j1_text_curl",
+                AsyncMock(return_value=body),
+            ) as curl_mock,
+        ):
+            text = await weather_cmd._wttr_fetch_j1_text("https://v2.wttr.in/Moscow?format=j1&lang=ru")
+
+        self.assertIn('"temp_C":"28"', text)
+        curl_mock.assert_awaited_once()
+
+    async def test_fetch_weather_payload_uses_wttr_fallback_when_primary_fails(self) -> None:
+        cfg = types.SimpleNamespace(
+            weather_provider="openmeteo",
+            weather_provider_fallback="wttr.in",
+            weather_cache_ttl_minutes=0.0,
+            locale="ru",
+        )
+        i18n = _I18nStub()
+        primary = AsyncMock(
+            return_value=(
+                False,
+                WeatherPayload("errors.weather_failed:451", tz_offset_seconds=None),
+                "provider_error",
+            )
+        )
+        fallback = AsyncMock(
+            return_value=(True, WeatherPayload("Moscow\n⛈️", tz_offset_seconds=None), "provider_error")
+        )
+        with (
+            patch("meshcore_bot.commands.weather_cmd._fetch_open_meteo", primary),
+            patch("meshcore_bot.commands.weather_cmd._fetch_wttr_in", fallback),
+        ):
+            payload = await weather_cmd.fetch_weather_payload("Moscow", cfg, i18n, use_cache=False)
+
+        self.assertEqual(payload.weather_body, "Moscow\n⛈️")
+        primary.assert_awaited_once()
+        fallback.assert_awaited_once()
+
+    def test_meteostat_stations_db_is_valid_rejects_small_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stations.db"
+            path.write_bytes(b"tiny")
+            self.assertFalse(weather_cmd._meteostat_stations_db_is_valid(path))
+
+    def test_meteostat_stations_db_is_valid_accepts_sqlite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "stations.db"
+            con = sqlite3.connect(path)
+            try:
+                con.execute("CREATE TABLE stations (id TEXT, latitude REAL, longitude REAL)")
+                con.execute("INSERT INTO stations VALUES ('x', 55.0, 37.0)")
+                con.commit()
+            finally:
+                con.close()
+            with patch.object(weather_cmd, "METEOSTAT_STATIONS_DB_MIN_BYTES", 1):
+                self.assertTrue(weather_cmd._meteostat_stations_db_is_valid(path))
 
 
 class ChannelDeliveryRetryTests(unittest.IsolatedAsyncioTestCase):

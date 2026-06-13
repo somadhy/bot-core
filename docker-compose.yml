@@ -14,10 +14,14 @@
 #
 # После админской !stop при restart: unless-stopped контейнер поднимется снова —
 # docker compose stop или restart: "no".
+#
+# network_mode: host — сеть хоста (Linux). Нужно, если из bridge-контейнера
+# не открываются внешние API (погода: Open-Meteo, wttr.in), а с хоста curl работает.
 
 services:
   bot:
     build: .
+    network_mode: host
     devices:
       - ${SERIAL_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0
     volumes:
@@ -39,6 +43,7 @@ services:
   diagnose:
     profiles: [diagnose]
     build: .
+    network_mode: host
     devices:
       - ${SERIAL_DEVICE:-/dev/ttyUSB0}:/dev/ttyUSB0
     volumes:
