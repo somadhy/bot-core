@@ -495,19 +495,19 @@ async def _geocode_city(
     return False, None, "provider_error"
 
 
-async def _geocode_tz_offset_seconds(
+async def _geocode_meta(
     city: str, cfg: BotConfig, i18n: I18n
-) -> int | None:
-    """Resolve UTC offset for local time; wttr.in j1 does not include timezone metadata."""
+) -> _GeocodeResult | None:
+    """City name and tz for display; wttr.in nearest_area labels are sometimes wrong."""
     try:
         async with httpx.AsyncClient(timeout=OPEN_METEO_GEOCODE_TIMEOUT) as client:
             ok, geo, err = await _geocode_city(city, cfg, i18n, client=client)
-            if ok and geo is not None and geo.tz_offset_seconds is not None:
-                return int(geo.tz_offset_seconds)
+            if ok and geo is not None:
+                return geo
             if err == "city_not_found":
                 return None
     except httpx.HTTPError as e:
-        logger.debug("tz geocode failed for %r: %r", city.strip(), e)
+        logger.debug("geocode meta failed for %r: %r", city.strip(), e)
     return None
 
 
@@ -1156,12 +1156,14 @@ async def _fetch_wttr_in_once(
 
     tf = float(temp)
     t_str = f"{tf:.0f}" if abs(tf - round(tf)) < 0.05 else f"{tf:.1f}"
-    tz_offset = await _geocode_tz_offset_seconds(name or city, cfg, i18n)
+    geo = await _geocode_meta(city, cfg, i18n)
+    display_name = geo.name if geo is not None else name
+    tz_offset = geo.tz_offset_seconds if geo is not None else None
     return (
         True,
         WeatherPayload(
             _format_weather_line(
-                name,
+                display_name,
                 t_str,
                 wcode,
                 hum,

@@ -586,18 +586,25 @@ class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
         body = (
             '{"current_condition":[{"humidity":"43","precipMM":"0.0","pressure":"1008",'
             '"temp_C":"28","weatherCode":"200","windspeedKmph":"15"}],'
-            '"nearest_area":[{"areaName":[{"value":"Moscow"}]}'
+            '"nearest_area":[{"areaName":[{"value":"Чертаново"}]}'
         )
         with (
             patch("meshcore_bot.commands.weather_cmd._wttr_fetch_j1_text", AsyncMock(return_value=body)),
             patch(
-                "meshcore_bot.commands.weather_cmd._geocode_tz_offset_seconds",
-                AsyncMock(return_value=10_800),
+                "meshcore_bot.commands.weather_cmd._geocode_meta",
+                AsyncMock(
+                    return_value=weather_cmd._GeocodeResult(
+                        lat=55.50194,
+                        lon=36.02722,
+                        name="Можайск",
+                        tz_offset_seconds=10_800,
+                    )
+                ),
             ),
         ):
             ok, payload, err = await weather_cmd._fetch_wttr_in_once(
-                "Moscow",
-                "Moscow",
+                "можайск",
+                "можайск",
                 cfg,
                 i18n,
                 "https://v2.wttr.in",
@@ -606,6 +613,7 @@ class WeatherPayloadFetchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertEqual(err, "provider_error")
         self.assertEqual(payload.tz_offset_seconds, 10_800)
+        self.assertIn("Можайск", payload.weather_body)
 
     async def test_fetch_weather_payload_uses_wttr_fallback_when_primary_fails(self) -> None:
         cfg = types.SimpleNamespace(
