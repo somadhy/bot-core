@@ -19,6 +19,7 @@ from meshcore_bot.blacklist import Blacklist
 from meshcore_bot.channel_info import fetch_channel_table
 from meshcore_bot.commands.router import CmdKind, parse_incoming
 from meshcore_bot.commands.weather_cmd import WeatherPayload, fetch_weather_payload
+from meshcore_bot.geo import compute_ping_distance_suffix, parse_coords_from_mapping
 from meshcore_bot.node_advert_store import NodeAdvertRecord, NodeAdvertStore
 from meshcore_bot.textutil import clip_utf8_bytes, pack_lines_utf8_chunks
 
@@ -437,6 +438,25 @@ def _ping_reply_body(prefix: str, pathinfo: str) -> str:
     return lead or tail
 
 
+def _path_len_from_bags(
+    payload: dict[str, Any] | None,
+    attrs: dict[str, Any] | None = None,
+) -> int | None:
+    for bag in (payload, attrs):
+        if not isinstance(bag, dict):
+            continue
+        raw = bag.get("path_len")
+        if raw is None:
+            continue
+        try:
+            path_len = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if _is_plausible_path_len(path_len):
+            return path_len
+    return None
+
+
 def _packet_age_part(payload: dict[str, Any], attrs: dict[str, Any] | None = None) -> str | None:
     """Return packet age as emoji label from sender_timestamp, e.g. ``⏱3s``."""
     raw = payload.get("sender_timestamp")
@@ -561,6 +581,50 @@ class BotService:
         self._rx_log_grp_events: list[tuple[float, int, str, str, str]] = []
         self._rx_log_lock = asyncio.Lock()
         self._channel_name_cache: dict[int, str] = {}
+
+    def _bot_coords(self) -> tuple[float, float] | None:
+        si = self._mesh.self_info
+        if isinstance(si, dict):
+            return parse_coords_from_mapping(si)
+        return None
+
+    def _resolve_path_hop(self, hop_prefix: str) -> dict[str, Any] | NodeAdvertRecord | None:
+        prefix = (hop_prefix or "").strip().lower()
+        if not prefix:
+            return None
+        getter = getattr(self._mesh, "get_contact_by_key_prefix", None)
+        if callable(getter):
+            contact = getter(prefix)
+            if isinstance(contact, dict):
+                return contact
+        return self._node_store.find_best_by_prefix(prefix, prefer_repeater=True)
+
+    def _append_ping_distance(
+        self,
+        pong_info: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        attrs: dict[str, Any] | None = None,
+        path_nodes: list[str] | None = None,
+        hash_len: int | None = None,
+        sender_contact: dict[str, Any] | None = None,
+    ) -> str:
+        path_len = _path_len_from_bags(payload, attrs)
+        nodes = path_nodes if path_nodes is not None else _extract_path_nodes(payload, attrs)
+        h_len = hash_len if hash_len is not None else _extract_hash_len(payload, attrs)
+        suffix = compute_ping_distance_suffix(
+            bot_coords=self._bot_coords(),
+            sender_coords=parse_coords_from_mapping(sender_contact),
+            path_len=path_len,
+            path_nodes=nodes,
+            hash_len=h_len,
+            resolve_hop=self._resolve_path_hop,
+            locale=self._cfg.locale,
+        )
+        if not suffix:
+            return pong_info
+        base = (pong_info or "").strip()
+        return f"{base}, {suffix}" if base else suffix
 
     def _prune_rx_log_matches_locked(self, now_monotonic: float) -> None:
         max_wait = max(
@@ -1170,6 +1234,13 @@ class BotService:
                 pong_info = cache
             else:
                 pong_info = f"{_UNKNOWN_PATHINFO}, {q}"
+            pong_info = self._append_ping_distance(
+                pong_info,
+                payload=payload,
+                attrs=attrs,
+                path_nodes=msg_nodes,
+                hash_len=msg_hash_len,
+            )
             out = _reply_mention(
                 nick, _ping_reply_body(self._i18n.t("ping.pong"), pong_info)
             )
@@ -1361,6 +1432,12 @@ class BotService:
                 msg_pathinfo
                 if msg_pathinfo is not None
                 else f"{_UNKNOWN_PATHINFO}, {q}"
+            )
+            pong_info = self._append_ping_distance(
+                pong_info,
+                payload=payload,
+                attrs=attrs,
+                sender_contact=contact if isinstance(contact, dict) else None,
             )
             await self._send_dm(
                 dst,

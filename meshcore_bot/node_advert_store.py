@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from meshcore_bot.geo import is_repeater_node_type, parse_coords_from_mapping
+
 
 def _now_ts() -> float:
     return time.time()
@@ -41,6 +43,8 @@ class NodeAdvertRecord:
     node_name: str
     node_type: str
     last_advert_ts: float
+    adv_lat: float | None = None
+    adv_lon: float | None = None
 
 
 class NodeAdvertStore:
@@ -79,11 +83,14 @@ class NodeAdvertStore:
                 ts = float(row.get("last_advert_ts", 0) or 0)
             except (TypeError, ValueError):
                 ts = 0.0
+            coords = parse_coords_from_mapping(row)
             self._items[key] = NodeAdvertRecord(
                 public_key=key,
                 node_name=str(row.get("node_name") or "").strip(),
                 node_type=str(row.get("node_type") or "").strip(),
                 last_advert_ts=ts,
+                adv_lat=coords[0] if coords else None,
+                adv_lon=coords[1] if coords else None,
             )
         self.purge_and_trim()
 
@@ -114,11 +121,14 @@ class NodeAdvertStore:
         if not key:
             return False
         ts = float(now_ts if now_ts is not None else _now_ts())
+        coords = parse_coords_from_mapping(contact)
         rec = NodeAdvertRecord(
             public_key=key,
             node_name=_pick_first_str(contact, ("adv_name", "name", "node_name", "display_name")),
             node_type=_pick_first_str(contact, ("type", "node_type", "kind", "role")),
             last_advert_ts=ts,
+            adv_lat=coords[0] if coords else None,
+            adv_lon=coords[1] if coords else None,
         )
         self._items[key] = rec
         return True
@@ -172,3 +182,18 @@ class NodeAdvertStore:
         out = [v for k, v in self._items.items() if k.startswith(p)]
         out.sort(key=lambda x: x.last_advert_ts, reverse=True)
         return out
+
+    def find_best_by_prefix(
+        self,
+        key_prefix_hex: str,
+        *,
+        prefer_repeater: bool = False,
+    ) -> NodeAdvertRecord | None:
+        matches = self.find_by_prefix(key_prefix_hex)
+        if not matches:
+            return None
+        if prefer_repeater:
+            repeaters = [m for m in matches if is_repeater_node_type(m.node_type)]
+            if repeaters:
+                return repeaters[0]
+        return matches[0]
