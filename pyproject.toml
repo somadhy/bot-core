@@ -1,0 +1,15 @@
+[project]
+name = "meshcore-bot"
+version = "0.1.0"
+description = "MeshCore companion bot (weather, help, admin stop)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "meshcore>=2.3.0,<3",
+    "httpx>=0.27.0",
+    "PyYAML>=6.0.1",
+]
+
+[tool.uv]
+# Виртуальный проект: uv sync ставит только зависимости, сам пакет не собирается.
+package = false

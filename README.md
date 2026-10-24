@@ -62,21 +62,21 @@ docker compose --profile diagnose run --rm diagnose
 
 Удобно на Windows с COM-портом или для отладки.
 
+Нужен [uv](https://docs.astral.sh/uv/getting-started/installation/) (`pip install uv` или скрипт-установщик).
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+uv sync           # создаст .venv и установит зависимости по uv.lock
 cp config.example.yaml config.yaml
 # serial.device: COM3 (Windows) или /dev/ttyUSB0 (Linux)
 # export WEATHER_API_KEY=...  # только для weather.provider: openweathermap
-python -m meshcore_bot
+uv run python -m meshcore_bot
 ```
 
 Диагностика:
 
 ```bash
-python -m meshcore_bot --diagnose
-# или: python -m meshcore_bot -d
+uv run python -m meshcore_bot --diagnose
+# или: uv run python -m meshcore_bot -d
 ```
 
 На **Windows** USB в Docker Desktop обычно недоступен так же, как на Linux; для продакшена на Windows чаще используют **локальный** `python -m meshcore_bot` или Linux/VM с Docker.
