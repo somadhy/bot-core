@@ -261,8 +261,13 @@ class TimeCommandServiceTests(unittest.IsolatedAsyncioTestCase):
             node_advert_store_path=Path("/tmp/test-node-adverts.json"),
             node_advert_retention_days=7,
             node_advert_max_stored=5000,
+            locale="en",
         )
-        mesh = types.SimpleNamespace(get_contact_by_key_prefix=lambda _p: None)
+        # Mesh.self_info — property из meshcore; {} означает «координаты бота неизвестны».
+        mesh = types.SimpleNamespace(
+            get_contact_by_key_prefix=lambda _p: None,
+            self_info={},
+        )
         blacklist = types.SimpleNamespace(is_blocked=lambda *_a, **_k: False)
         svc = service.BotService(
             cfg=cfg,
