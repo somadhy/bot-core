@@ -10,6 +10,7 @@ RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    && python -m pip uninstall --yes pip setuptools \
     && rm -rf /var/lib/apt/lists/*
 
 # Ставим зависимости до копирования исходников — не ломаем слой кеша Docker.
